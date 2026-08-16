@@ -322,7 +322,7 @@ impl LsmStorageInner {
     /// Put a key-value pair into the storage by writing into the current memtable.
     pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
         let memtable_reaches_capacity = {
-            let state = self.state.write();
+            let state = self.state.read();
             state.memtable.put(key, value)?;
             state.memtable.approximate_size() >= self.options.target_sst_size
         };
@@ -342,7 +342,7 @@ impl LsmStorageInner {
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(&self, key: &[u8]) -> Result<()> {
         let memtable_reaches_capacity = {
-            let state = self.state.write();
+            let state = self.state.read();
             state.memtable.put(key, b"")?;
             state.memtable.approximate_size() >= self.options.target_sst_size
         };
@@ -385,11 +385,7 @@ impl LsmStorageInner {
         let memtable = Arc::new(MemTable::create(id));
 
         {
-            let mut guard: parking_lot::lock_api::RwLockWriteGuard<
-                '_,
-                parking_lot::RawRwLock,
-                Arc<LsmStorageState>,
-            > = self.state.write();
+            let mut guard = self.state.write();
             let mut snapshot = guard.as_ref().clone();
             let old_memtable = std::mem::replace(&mut snapshot.memtable, memtable);
             snapshot.imm_memtables.insert(0, old_memtable);
