@@ -328,7 +328,12 @@ impl LsmStorageInner {
         };
 
         if memtable_reaches_capacity {
-            self.force_freeze_memtable(&self.state_lock.lock())?;
+            let state_lock = self.state_lock.lock();
+            let guard = self.state.read();
+            if guard.memtable.approximate_size() >= self.options.target_sst_size {
+                drop(guard);
+                self.force_freeze_memtable(&state_lock)?;
+            }
         }
 
         Ok(())
@@ -343,7 +348,12 @@ impl LsmStorageInner {
         };
 
         if memtable_reaches_capacity {
-            self.force_freeze_memtable(&self.state_lock.lock())?;
+            let state_lock = self.state_lock.lock();
+            let guard = self.state.read();
+            if guard.memtable.approximate_size() >= self.options.target_sst_size {
+                drop(guard);
+                self.force_freeze_memtable(&state_lock)?;
+            }
         }
 
         Ok(())
@@ -375,7 +385,11 @@ impl LsmStorageInner {
         let memtable = Arc::new(MemTable::create(id));
 
         {
-            let mut guard = self.state.write();
+            let mut guard: parking_lot::lock_api::RwLockWriteGuard<
+                '_,
+                parking_lot::RawRwLock,
+                Arc<LsmStorageState>,
+            > = self.state.write();
             let mut snapshot = guard.as_ref().clone();
             let old_memtable = std::mem::replace(&mut snapshot.memtable, memtable);
             snapshot.imm_memtables.insert(0, old_memtable);
