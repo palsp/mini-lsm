@@ -56,8 +56,8 @@ impl BlockBuilder {
         data.put_u16(value.len() as u16);
         data.put_slice(value);
 
-        let size = self.data.len() + self.offsets.len();
-        if size != 0 && size + data.len() + 2 > self.block_size {
+        let size = self.data.len() + self.offsets.len() * 2 + 2;
+        if !self.is_empty() && size + data.len() + 2 > self.block_size {
             return false;
         }
 
