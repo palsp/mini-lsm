@@ -23,7 +23,7 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 pub use builder::SsTableBuilder;
 use bytes::Buf;
 pub use iterator::SsTableIterator;
@@ -53,7 +53,13 @@ impl BlockMeta {
         #[allow(clippy::ptr_arg)] // remove this allow after you finish
         buf: &mut Vec<u8>,
     ) {
-        unimplemented!()
+        for meta in block_meta.iter() {
+            buf.extend_from_slice(&(meta.offset as u16).to_be_bytes());
+            buf.extend_from_slice(&(meta.first_key.len() as u16).to_be_bytes());
+            buf.extend_from_slice(meta.first_key.raw_ref());
+            buf.extend_from_slice(&(meta.last_key.len() as u16).to_be_bytes());
+            buf.extend_from_slice(meta.last_key.raw_ref());
+        }
     }
 
     /// Decode block meta from a buffer.
@@ -147,7 +153,19 @@ impl SsTable {
 
     /// Read a block from the disk.
     pub fn read_block(&self, block_idx: usize) -> Result<Arc<Block>> {
-        unimplemented!()
+        ensure!(block_idx < self.block_meta.len(), "index out-of-range");
+
+        let meta = &self.block_meta[block_idx];
+        let next_block_start = if block_idx + 1 == self.block_meta.len() {
+            self.block_meta_offset
+        } else {
+            self.block_meta[block_idx + 1].offset
+        };
+
+        let len = (next_block_start - meta.offset) as u64;
+        let data = self.file.read(meta.offset as u64, len)?;
+        let block = Block::decode(&data);
+        Ok(Arc::new(block))
     }
 
     /// Read a block from disk, with block cache. (Day 4)
