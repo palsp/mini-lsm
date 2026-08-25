@@ -23,9 +23,9 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 pub use builder::SsTableBuilder;
-use bytes::Buf;
+use bytes::{Buf, Bytes};
 pub use iterator::SsTableIterator;
 
 use crate::block::Block;
@@ -33,6 +33,8 @@ use crate::key::{KeyBytes, KeySlice};
 use crate::lsm_storage::BlockCache;
 
 use self::bloom::Bloom;
+
+pub(crate) const SIZEOF_U16: usize = std::mem::size_of::<u16>();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockMeta {
@@ -64,7 +66,34 @@ impl BlockMeta {
 
     /// Decode block meta from a buffer.
     pub fn decode_block_meta(buf: impl Buf) -> Vec<BlockMeta> {
-        unimplemented!()
+        let mut block_meta: Vec<BlockMeta> = Vec::new();
+        let mut cur = 0;
+        let data = buf.chunk();
+        let size = buf.remaining();
+        while cur < size {
+            let offset = u16::from_be_bytes([data[cur], data[cur + 1]]) as usize;
+            cur += 2;
+            let first_key_len = u16::from_be_bytes([data[cur], data[cur + 1]]);
+            cur += 2;
+
+            let first_key_end = cur + first_key_len as usize;
+            let first_key = KeyBytes::from_bytes(Bytes::copy_from_slice(&data[cur..first_key_end]));
+            cur += first_key_len as usize;
+
+            let last_key_len = u16::from_be_bytes([data[cur], data[cur + 1]]);
+            cur += 2;
+            let last_key_end = cur + last_key_len as usize;
+            let last_key = KeyBytes::from_bytes(Bytes::copy_from_slice(&data[cur..last_key_end]));
+            cur += last_key_len as usize;
+
+            block_meta.push(BlockMeta {
+                offset,
+                first_key,
+                last_key,
+            });
+        }
+
+        block_meta
     }
 }
 
@@ -128,7 +157,42 @@ impl SsTable {
 
     /// Open SSTable from a file.
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
-        unimplemented!()
+        let buf = file.read(0, file.size())?;
+        ensure!(buf.len() >= SIZEOF_U16, "table footer is truncated");
+        let block_meta_offset_start = buf.len() - 4;
+        let block_meta_offset = u32::from_be_bytes([
+            buf[buf.len() - 4],
+            buf[buf.len() - 3],
+            buf[buf.len() - 2],
+            buf[buf.len() - 1],
+        ]) as usize;
+        ensure!(
+            block_meta_offset <= buf.len(),
+            "table block_meta offset is truncated"
+        );
+        let block_mete_end = buf.len() - 4;
+        let block_meta = BlockMeta::decode_block_meta(&buf[block_meta_offset..block_mete_end]);
+
+        let first_key = block_meta
+            .first()
+            .map(|meta| meta.first_key.to_owned())
+            .context("block_meta is empty")?;
+
+        let last_key = block_meta
+            .last()
+            .map(|meta| meta.last_key.to_owned())
+            .context("block_meta is empty")?;
+        Ok(Self {
+            file,
+            block_meta,
+            block_meta_offset,
+            id,
+            block_cache: None,
+            first_key,
+            last_key,
+            bloom: None,
+            max_ts: 0,
+        })
     }
 
     /// Create a mock SST with only first key + last key metadata
