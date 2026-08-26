@@ -23,7 +23,7 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Error, Result, anyhow, ensure};
 pub use builder::SsTableBuilder;
 use bytes::{Buf, Bytes};
 pub use iterator::SsTableIterator;
@@ -234,14 +234,43 @@ impl SsTable {
 
     /// Read a block from disk, with block cache. (Day 4)
     pub fn read_block_cached(&self, block_idx: usize) -> Result<Arc<Block>> {
-        unimplemented!()
+        match &self.block_cache {
+            Some(block_cache) => {
+                let block = block_cache
+                    .try_get_with((self.sst_id(), block_idx), || self.read_block(block_idx))
+                    .map_err(|e| anyhow!("{}", e))?;
+                Ok(block)
+            }
+            None => self.read_block(block_idx),
+        }
     }
 
     /// Find the block that may contain `key`.
     /// Note: You may want to make use of the `first_key` stored in `BlockMeta`.
     /// You may also assume the key-value pairs stored in each consecutive block are sorted.
     pub fn find_block_idx(&self, key: KeySlice) -> usize {
-        unimplemented!()
+        let (mut left, mut right) = (0_usize, self.num_of_blocks());
+        let target = key.to_key_vec().into_key_bytes();
+        while left < right {
+            let mid = left + (right - left) / 2;
+            let meta = &self.block_meta[mid];
+            if meta.first_key.le(&target) && meta.last_key.ge(&target) {
+                return mid;
+            }
+
+            if meta.first_key.gt(&target) {
+                right = mid;
+            } else {
+                left = mid + 1;
+            }
+        }
+
+        // TODO: check exit condition
+        if left >= self.num_of_blocks() {
+            return self.num_of_blocks() - 1;
+        }
+
+        left
     }
 
     /// Get number of data blocks.
