@@ -24,6 +24,7 @@ use std::vec;
 
 use anyhow::{Result, anyhow};
 use bytes::{Buf, Bytes};
+use nom::AsBytes;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
 use crate::block::Block;
@@ -303,16 +304,36 @@ impl LsmStorageInner {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        let state = self.state.read();
-        let found = state.memtable.get(key);
+        let snapshot = {
+            let guard = self.state.read();
+            Arc::clone(&guard)
+        };
+        let found = snapshot.memtable.get(key);
         if found.is_some() {
             return Ok(found.filter(|v| !v.is_empty()));
         }
 
-        for imm_memtable in state.imm_memtables.iter() {
+        for imm_memtable in snapshot.imm_memtables.iter() {
             let found = imm_memtable.get(key);
             if found.is_some() {
                 return Ok(found.filter(|v| !v.is_empty()));
+            }
+        }
+
+        let target = KeySlice::from_slice(key);
+        for id in snapshot.l0_sstables.iter() {
+            let sstable = snapshot
+                .sstables
+                .get(id)
+                .ok_or(anyhow!("sstable not found"))?;
+            let iter = SsTableIterator::create_and_seek_to_key(sstable.clone(), target)?;
+            if iter.is_valid() && iter.key() == target {
+                let found = if iter.value().is_empty() {
+                    None
+                } else {
+                    Some(Bytes::copy_from_slice(iter.value()))
+                };
+                return Ok(found);
             }
         }
 
