@@ -33,7 +33,7 @@ impl<
 > TwoMergeIterator<A, B>
 {
     pub fn create(a: A, b: B) -> Result<Self> {
-        unimplemented!()
+        Ok(Self { a, b })
     }
 }
 
@@ -45,18 +45,45 @@ impl<
     type KeyType<'a> = A::KeyType<'a>;
 
     fn key(&self) -> Self::KeyType<'_> {
-        unimplemented!()
+        if !self.a.is_valid() || (self.b.is_valid() && self.a.key() > self.b.key()) {
+            return self.b.key();
+        }
+
+        self.a.key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        if !self.a.is_valid() || (self.b.is_valid() && self.a.key() > self.b.key()) {
+            return self.b.value();
+        }
+
+        self.a.value()
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.a.is_valid() || self.b.is_valid()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        if !self.a.is_valid() {
+            return self.b.next();
+        }
+
+        if !self.b.is_valid() {
+            return self.a.next();
+        }
+
+        if self.a.key() > self.b.key() {
+            return self.b.next();
+        }
+
+        self.a.next()?;
+        if self.a.is_valid() {
+            while self.b.is_valid() && self.a.key() >= self.b.key() {
+                self.b.next()?;
+            }
+        }
+
+        Ok(())
     }
 }
