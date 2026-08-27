@@ -15,23 +15,34 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
+use std::ops::Bound;
+
 use anyhow::{Result, bail};
+use bytes::Bytes;
 
 use crate::{
-    iterators::{StorageIterator, merge_iterator::MergeIterator},
+    iterators::{
+        StorageIterator, merge_iterator::MergeIterator, two_merge_iterator::TwoMergeIterator,
+    },
     mem_table::MemTableIterator,
+    table::SsTableIterator,
 };
 
 /// Represents the internal type for an LSM iterator. This type will be changed across the course for multiple times.
-type LsmIteratorInner = MergeIterator<MemTableIterator>;
+type LsmIteratorInner =
+    TwoMergeIterator<MergeIterator<MemTableIterator>, MergeIterator<SsTableIterator>>;
 
 pub struct LsmIterator {
     inner: LsmIteratorInner,
+    end_bound: Bound<Bytes>,
 }
 
 impl LsmIterator {
-    pub(crate) fn new(iter: LsmIteratorInner) -> Result<Self> {
-        let mut iter = Self { inner: iter };
+    pub(crate) fn new(iter: LsmIteratorInner, end_bound: Bound<Bytes>) -> Result<Self> {
+        let mut iter = Self {
+            inner: iter,
+            end_bound,
+        };
         iter.move_to_non_delete()?;
         Ok(iter)
     }
@@ -42,13 +53,21 @@ impl LsmIterator {
         }
         Ok(())
     }
+
+    fn reach_end_bound(&self) -> bool {
+        match &self.end_bound {
+            Bound::Included(end_key) => self.key() > end_key,
+            Bound::Excluded(end_key) => self.key() >= end_key,
+            Bound::Unbounded => false,
+        }
+    }
 }
 
 impl StorageIterator for LsmIterator {
     type KeyType<'a> = &'a [u8];
 
     fn is_valid(&self) -> bool {
-        self.inner.is_valid()
+        self.inner.is_valid() && !self.reach_end_bound()
     }
 
     fn key(&self) -> &[u8] {
@@ -60,9 +79,9 @@ impl StorageIterator for LsmIterator {
     }
 
     fn next(&mut self) -> Result<()> {
-        while self.is_valid() {
+        while self.is_valid() && !self.reach_end_bound() {
             self.inner.next()?;
-            if self.inner.is_valid() && !self.inner.value().is_empty() {
+            if self.inner.is_valid() && !self.reach_end_bound() && !self.inner.value().is_empty() {
                 break;
             }
         }
