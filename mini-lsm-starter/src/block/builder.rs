@@ -48,7 +48,6 @@ impl BlockBuilder {
     /// You may find the `bytes::BufMut` trait useful for manipulating binary data.
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
-        let offset = self.data.len();
         let mut data = BytesMut::new();
 
         data.put_u16(key.len() as u16);
@@ -61,8 +60,12 @@ impl BlockBuilder {
             return false;
         }
 
+        let Ok(offset) = u16::try_from(self.data.len()) else {
+            return false;
+        };
+
         self.data.append(&mut data.to_vec());
-        self.offsets.push(offset.try_into().unwrap());
+        self.offsets.push(offset);
         true
     }
 
