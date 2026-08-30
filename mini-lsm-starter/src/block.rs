@@ -17,13 +17,14 @@
 
 mod builder;
 mod iterator;
+use bytes::Buf;
 
 use anyhow::{Context, Result, ensure};
 pub use builder::BlockBuilder;
 use bytes::{BufMut, Bytes, BytesMut};
 pub use iterator::BlockIterator;
 
-use crate::key::Key;
+use crate::key::KeyVec;
 
 pub(crate) const SIZEOF_U16: usize = std::mem::size_of::<u16>();
 pub(crate) const SIZEOF_U32: usize = std::mem::size_of::<u32>();
@@ -35,6 +36,14 @@ pub struct Block {
 }
 
 impl Block {
+    fn get_first_key(&self) -> KeyVec {
+        let mut buf = &self.data[..];
+        // Read overlap len but it is always 0 for first key
+        buf.get_u16();
+        let key_len = buf.get_u16();
+        let key = &buf[..key_len as usize];
+        KeyVec::from_vec(key.to_vec())
+    }
     /// Encode the internal data to the data layout illustrated in the course
     /// Note: You may want to recheck if any of the expected field is missing from your output
     pub fn encode(&self) -> Bytes {

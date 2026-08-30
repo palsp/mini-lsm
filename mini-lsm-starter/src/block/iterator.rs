@@ -37,17 +37,13 @@ pub struct BlockIterator {
 
 impl BlockIterator {
     fn new(block: Arc<Block>) -> Self {
-        let mut iter = Self {
+        Self {
+            first_key: block.get_first_key(),
             block,
             key: KeyVec::new(),
             value_range: (0, 0),
             idx: 0,
-            first_key: KeyVec::new(),
-        };
-
-        let (first_key, _) = iter.decode_key_at_idx(0);
-        iter.first_key = first_key;
-        iter
+        }
     }
 
     /// Creates a block iterator and seek to the first entry.

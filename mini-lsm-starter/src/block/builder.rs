@@ -17,7 +17,10 @@
 
 use bytes::{BufMut, BytesMut};
 
-use crate::key::{KeySlice, KeyVec};
+use crate::{
+    block::SIZEOF_U16,
+    key::{KeySlice, KeyVec},
+};
 
 use super::Block;
 
@@ -44,7 +47,7 @@ impl BlockBuilder {
         }
     }
 
-    fn find_overlap_len(&self, key: KeySlice) -> u16 {
+    fn compute_overlap(&self, key: KeySlice) -> u16 {
         let mut overlap = 0;
 
         for i in 0..key.len() {
@@ -66,29 +69,20 @@ impl BlockBuilder {
     /// You may find the `bytes::BufMut` trait useful for manipulating binary data.
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
-        let mut data = BytesMut::new();
-        if self.first_key.is_empty() {
-            self.first_key = key.to_key_vec();
-            data.put_u16(0); // no overlap key len
-            data.put_u16(key.len() as u16);
-            data.put_slice(key.into_inner());
-        } else {
-            let overlap_key_len = self.find_overlap_len(key);
-            data.put_u16(overlap_key_len);
-            if let Some(rest_key_len) = (key.len() as u16).checked_sub(overlap_key_len) {
-                data.put_u16(rest_key_len);
-                let rest_key_start = key.len() - (overlap_key_len as usize);
-                data.put_slice(&key.into_inner()[(overlap_key_len as usize)..]);
-            } else {
-                return false;
-            }
-        }
+        let Ok(key_len) = u16::try_from(key.len()) else {
+            return false;
+        };
+        let Ok(value_len) = u16::try_from(value.len()) else {
+            return false;
+        };
 
-        data.put_u16(value.len() as u16);
-        data.put_slice(value);
+        let entry_size = key
+            .len()
+            .saturating_add(value.len())
+            .saturating_add(SIZEOF_U16 * 3);
 
-        let size = self.data.len() + self.offsets.len() * 2 + 2;
-        if !self.is_empty() && size + data.len() + 2 > self.block_size {
+        let block_is_full = self.estimated_size().saturating_add(entry_size) > self.block_size;
+        if !self.is_empty() && block_is_full {
             return false;
         }
 
@@ -96,8 +90,23 @@ impl BlockBuilder {
             return false;
         };
 
-        self.data.append(&mut data.to_vec());
         self.offsets.push(offset);
+        let overlap = self.compute_overlap(key);
+
+        // Encode key overlap.
+        self.data.put_u16(overlap);
+        // Encode key length
+        self.data.put_u16(key_len - overlap);
+        // Encode key content
+        self.data.put(&key.raw_ref()[usize::from(overlap)..]);
+        // Encode value length
+        self.data.put_u16(value_len);
+        self.data.put(value);
+
+        if self.first_key.is_empty() {
+            self.first_key = key.to_key_vec();
+        }
+
         true
     }
 
@@ -112,5 +121,10 @@ impl BlockBuilder {
             data: self.data,
             offsets: self.offsets,
         }
+    }
+
+    fn estimated_size(&self) -> usize {
+        // number of key-value pairs in the blocks + offsets + key-value pairs
+        SIZEOF_U16 + self.offsets.len() * SIZEOF_U16 + self.data.len()
     }
 }
