@@ -324,8 +324,15 @@ impl LsmStorageInner {
 
         let target = KeySlice::from_slice(key);
         let mut l0_iters = Vec::with_capacity(snapshot.l0_sstables.len());
+        let h = farmhash::fingerprint32(key);
         for table_id in snapshot.l0_sstables.iter() {
             let table = snapshot.sstables[table_id].clone();
+            if let Some(bloom) = &table.bloom
+                && !bloom.may_contain(h)
+            {
+                continue;
+            }
+
             if key_within(
                 key,
                 table.first_key().as_key_slice(),

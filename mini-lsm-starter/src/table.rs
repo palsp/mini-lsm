@@ -159,19 +159,31 @@ impl SsTable {
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
         let buf = file.read(0, file.size())?;
         ensure!(buf.len() >= SIZEOF_U16, "table footer is truncated");
-        let block_meta_offset_start = buf.len() - 4;
+        let bloom_offset_start = buf.len() - 4;
+        let bloom_offset = u32::from_be_bytes([
+            buf[bloom_offset_start],
+            buf[bloom_offset_start + 1],
+            buf[bloom_offset_start + 2],
+            buf[bloom_offset_start + 3],
+        ]) as usize;
+        ensure!(bloom_offset <= buf.len(), "table bloom offset is truncated");
+        let bloom = Bloom::decode(&buf[bloom_offset..bloom_offset_start])?;
+
+        let block_meta_offset_start = bloom_offset
+            .checked_sub(std::mem::size_of::<u32>())
+            .context("table block_meta is truncated")?;
         let block_meta_offset = u32::from_be_bytes([
-            buf[buf.len() - 4],
-            buf[buf.len() - 3],
-            buf[buf.len() - 2],
-            buf[buf.len() - 1],
+            buf[block_meta_offset_start],
+            buf[block_meta_offset_start + 1],
+            buf[block_meta_offset_start + 2],
+            buf[block_meta_offset_start + 3],
         ]) as usize;
         ensure!(
-            block_meta_offset <= buf.len(),
+            block_meta_offset <= block_meta_offset_start,
             "table block_meta offset is truncated"
         );
-        let block_mete_end = buf.len() - 4;
-        let block_meta = BlockMeta::decode_block_meta(&buf[block_meta_offset..block_mete_end]);
+        let block_meta =
+            BlockMeta::decode_block_meta(&buf[block_meta_offset..block_meta_offset_start]);
 
         let first_key = block_meta
             .first()
@@ -190,7 +202,7 @@ impl SsTable {
             block_cache: None,
             first_key,
             last_key,
-            bloom: None,
+            bloom: Some(bloom),
             max_ts: 0,
         })
     }
