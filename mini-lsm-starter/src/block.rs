@@ -26,6 +26,7 @@ pub use iterator::BlockIterator;
 use crate::key::Key;
 
 pub(crate) const SIZEOF_U16: usize = std::mem::size_of::<u16>();
+pub(crate) const SIZEOF_U32: usize = std::mem::size_of::<u32>();
 
 /// A block is the smallest unit of read and caching in LSM tree. It is a collection of sorted key-value pairs.
 pub struct Block {
@@ -63,8 +64,6 @@ impl Block {
     }
 
     pub fn decode_checked(data: &[u8]) -> Result<Self> {
-        let mut builder = BlockBuilder::new(65_535);
-
         ensure!(data.len() >= SIZEOF_U16, "block footer is truncated");
         let entry_offsets_len =
             u16::from_be_bytes([data[data.len() - 2], data[data.len() - 1]]) as usize;
@@ -100,10 +99,13 @@ impl Block {
             let entry = &data[entry_start..entry_end];
             // entry >=  key_len + value_len
             ensure!(entry.len() >= 4, "block entry header is truncated");
-            let key_len = u16::from_be_bytes([entry[0], entry[1]]) as usize;
-            let key_end = SIZEOF_U16
-                .checked_add(key_len)
+            let overlap_key_len = u16::from_be_bytes([entry[0], entry[1]]) as usize;
+            let rest_key_len = u16::from_be_bytes([entry[2], entry[3]]) as usize;
+
+            let key_end = SIZEOF_U32
+                .checked_add(rest_key_len)
                 .context("block key length overflow")?;
+
             let value_len_end = key_end
                 .checked_add(SIZEOF_U16)
                 .context("block value header overflow")?;
@@ -116,14 +118,11 @@ impl Block {
                 .checked_add(value_len)
                 .context("block value length overflow")?;
             ensure!(entry_len == entry.len(), "block value length is invalid");
-
-            let success = builder.add(
-                Key::from_slice(&entry[SIZEOF_U16..key_end]),
-                &entry[value_len_end..entry_len],
-            );
-            ensure!(success, "block is full");
         }
 
-        Ok(builder.build())
+        Ok(Self {
+            data: data[..data_end].to_vec(),
+            offsets,
+        })
     }
 }

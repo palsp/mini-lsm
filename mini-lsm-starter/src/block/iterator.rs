@@ -37,13 +37,17 @@ pub struct BlockIterator {
 
 impl BlockIterator {
     fn new(block: Arc<Block>) -> Self {
-        Self {
+        let mut iter = Self {
             block,
             key: KeyVec::new(),
             value_range: (0, 0),
             idx: 0,
             first_key: KeyVec::new(),
-        }
+        };
+
+        let (first_key, _) = iter.decode_key_at_idx(0);
+        iter.first_key = first_key;
+        iter
     }
 
     /// Creates a block iterator and seek to the first entry.
@@ -55,12 +59,27 @@ impl BlockIterator {
 
     fn decode_key_at_idx(&self, idx: usize) -> (KeyVec, usize) {
         let offset = self.block.offsets[idx] as usize;
-        let key_len =
-            u16::from_be_bytes(self.block.data[offset..(offset + 2)].try_into().unwrap()) as usize;
+        let overlap_key_len_end = offset + 2;
+        let overlap_key_len = u16::from_be_bytes(
+            self.block.data[offset..overlap_key_len_end]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+
+        let rest_key_len_end = overlap_key_len_end + 2;
+        let rest_key_len = u16::from_be_bytes(
+            self.block.data[overlap_key_len_end..rest_key_len_end]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+
         let mut key = KeyVec::new();
-        let key_offset = offset + 2;
-        key.append(&self.block.data[key_offset..(key_offset + key_len)]);
-        (key, key_offset + key_len)
+        if overlap_key_len > 0 {
+            key.append(&self.first_key.raw_ref()[..overlap_key_len]);
+        }
+        let key_end = rest_key_len_end + rest_key_len;
+        key.append(&self.block.data[rest_key_len_end..key_end]);
+        (key, key_end)
     }
 
     fn seek_to_idx(&mut self, idx: usize) {

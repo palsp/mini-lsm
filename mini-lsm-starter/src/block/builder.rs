@@ -44,14 +44,46 @@ impl BlockBuilder {
         }
     }
 
+    fn find_overlap_len(&self, key: KeySlice) -> u16 {
+        let mut overlap = 0;
+
+        for i in 0..key.len() {
+            if i >= self.first_key.len() {
+                break;
+            }
+
+            if key.raw_ref()[i] != self.first_key.raw_ref()[i] {
+                break;
+            }
+
+            overlap += 1;
+        }
+
+        overlap
+    }
+
     /// Adds a key-value pair to the block. Returns false when the block is full.
     /// You may find the `bytes::BufMut` trait useful for manipulating binary data.
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
         let mut data = BytesMut::new();
+        if self.first_key.is_empty() {
+            self.first_key = key.to_key_vec();
+            data.put_u16(0); // no overlap key len
+            data.put_u16(key.len() as u16);
+            data.put_slice(key.into_inner());
+        } else {
+            let overlap_key_len = self.find_overlap_len(key);
+            data.put_u16(overlap_key_len);
+            if let Some(rest_key_len) = (key.len() as u16).checked_sub(overlap_key_len) {
+                data.put_u16(rest_key_len);
+                let rest_key_start = key.len() - (overlap_key_len as usize);
+                data.put_slice(&key.into_inner()[(overlap_key_len as usize)..]);
+            } else {
+                return false;
+            }
+        }
 
-        data.put_u16(key.len() as u16);
-        data.put_slice(key.into_inner());
         data.put_u16(value.len() as u16);
         data.put_slice(value);
 
