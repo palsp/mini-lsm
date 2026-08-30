@@ -92,7 +92,17 @@ impl Bloom {
         let mut filter = BytesMut::with_capacity(nbytes);
         filter.resize(nbytes, 0);
 
-        // TODO: build the bloom filter
+        let a = farmhash::fingerprint32(b"a");
+
+        for &key in keys {
+            let mut h = key;
+            let delta = h.rotate_left(15);
+            for i in 0..k {
+                let bit_idx = (h as usize) % nbits;
+                filter.set_bit(bit_idx, true);
+                h = h.wrapping_add(delta);
+            }
+        }
 
         Self {
             filter: filter.freeze(),
@@ -109,7 +119,15 @@ impl Bloom {
             let nbits = self.filter.bit_len();
             let delta = h.rotate_left(15);
 
-            // TODO: probe the bloom filter
+            let mut h = h;
+            for i in 0..self.k {
+                let bit_idx = (h as usize) % nbits;
+                if !self.filter.get_bit(bit_idx) {
+                    return false;
+                }
+
+                h = h.wrapping_add(delta);
+            }
 
             true
         }
