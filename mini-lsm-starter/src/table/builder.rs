@@ -50,11 +50,7 @@ impl SsTableBuilder {
             last_key: Vec::new(),
             key_hashes: Vec::new(),
             data: Vec::new(),
-            meta: vec![BlockMeta {
-                offset: 0,
-                first_key: KeyBytes::from_bytes(Bytes::new()),
-                last_key: KeyBytes::from_bytes(Bytes::new()),
-            }],
+            meta: Vec::new(),
         }
     }
 
@@ -63,6 +59,14 @@ impl SsTableBuilder {
     /// Note: You should split a new block when the current block is full.(`std::mem::replace` may
     /// be helpful here)
     pub fn add(&mut self, key: KeySlice, value: &[u8]) {
+        if self.meta.is_empty() {
+            self.meta.push(BlockMeta {
+                offset: 0,
+                first_key: KeyBytes::from_bytes(Bytes::new()),
+                last_key: KeyBytes::from_bytes(Bytes::new()),
+            });
+        }
+
         let key_bytes = key.to_key_vec().into_key_bytes();
         if !self.builder.add(key, value) {
             let builder = std::mem::replace(&mut self.builder, BlockBuilder::new(self.block_size));
