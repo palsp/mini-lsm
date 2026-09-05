@@ -281,3 +281,34 @@ fn test_task3_integration() {
     assert_eq!(storage.get(b"--").unwrap(), None);
     assert_eq!(storage.get(b"555").unwrap(), None);
 }
+
+#[test]
+fn test_task3_compaction_only_tombstone() {
+    let dir = tempdir().unwrap();
+    let storage =
+        Arc::new(LsmStorageInner::open(&dir, LsmStorageOptions::default_for_week1_test()).unwrap());
+    storage.put(b"0", b"2333333").unwrap();
+    storage.put(b"00", b"2333333").unwrap();
+    storage.put(b"4", b"23").unwrap();
+    sync(&storage);
+
+    storage.delete(b"0").unwrap();
+    storage.delete(b"00").unwrap();
+    storage.delete(b"4").unwrap();
+    sync(&storage);
+
+    storage.force_full_compaction().unwrap();
+    assert!(storage.state.read().l0_sstables.is_empty());
+    assert!(storage.state.read().levels[0].1.is_empty());
+}
+fn print_key(storage: &Arc<LsmStorageInner>, key: &[u8]) {
+    if let Some(val) = &storage.get(key).unwrap() {
+        println!(
+            "{}->{}",
+            String::from_utf8_lossy(key),
+            String::from_utf8_lossy(val.as_ref())
+        );
+    } else {
+        println!("{}->deleted", String::from_utf8_lossy(key),);
+    }
+}

@@ -12,7 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::lsm_storage::{LsmStorageInner, MiniLsm};
+use std::sync::Arc;
+
+use crate::{
+    iterators::StorageIterator,
+    lsm_storage::{LsmStorageInner, MiniLsm},
+    table::{SsTable, SsTableIterator},
+};
 
 impl LsmStorageInner {
     pub fn dump_structure(&self) {
@@ -33,5 +39,20 @@ impl LsmStorageInner {
 impl MiniLsm {
     pub fn dump_structure(&self) {
         self.inner.dump_structure()
+    }
+}
+
+impl SsTable {
+    pub fn dump_structure(self: &Arc<Self>) {
+        let mut iter = SsTableIterator::create_and_seek_to_first(self.clone()).unwrap();
+
+        while iter.is_valid() {
+            println!(
+                "{}->{}",
+                String::from_utf8_lossy(iter.key().raw_ref()),
+                String::from_utf8_lossy(iter.value())
+            );
+            iter.next().unwrap();
+        }
     }
 }
