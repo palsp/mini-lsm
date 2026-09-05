@@ -19,7 +19,7 @@ mod leveled;
 mod simple_leveled;
 mod tiered;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
@@ -206,44 +206,41 @@ impl LsmStorageInner {
             l1_sstables: l1_to_compact.clone(),
         };
         let new_sstables = self.compact(compaction_task)?;
+        let mut ids = Vec::with_capacity(new_sstables.len());
 
         println!("forced full compaction: {:?}", compaction_task);
 
-        let old_sstables = {
+        {
             let mut guard = self.state.write();
             let mut snapshot = guard.as_ref().clone();
+            for sst in l0_to_compact.iter().chain(l1_to_compact.iter()) {
+                let result = snapshot.sstables.remove(sst);
+                assert!(result.is_some());
+            }
 
-            let (l0_old, l0_new) = snapshot
+            for new_sst in new_sstables {
+                ids.push(new_sst.sst_id());
+                let result = snapshot.sstables.insert(new_sst.sst_id(), new_sst);
+                assert!(result.is_none());
+            }
+            assert_eq!(l1_to_compact, snapshot.levels[0].1);
+            snapshot.levels[0].1.clone_from(&ids);
+            let mut l0_sstables_map = l0_to_compact.iter().copied().collect::<HashSet<_>>();
+            snapshot.l0_sstables = snapshot
                 .l0_sstables
                 .iter()
-                .partition(|&id| l0_to_compact.contains(id));
-
-            let mut old_sstables = HashMap::new();
-            for id in l0_old {
-                old_sstables.insert(id, snapshot.sstables[&id].clone());
-                snapshot.sstables.remove(&id);
-            }
-            for id in l1_to_compact {
-                old_sstables.insert(id, snapshot.sstables[&id].clone());
-                snapshot.sstables.remove(&id);
-            }
-
-            let levels = new_sstables.iter().map(|table| table.sst_id()).collect();
-            for table in new_sstables {
-                snapshot.sstables.insert(table.sst_id(), table);
-            }
-
-            snapshot.l0_sstables = l0_new;
-            snapshot.levels[0] = (1, levels);
+                .filter(|id| !l0_sstables_map.remove(id))
+                .copied()
+                .collect::<Vec<_>>();
+            assert!(l0_sstables_map.is_empty());
             *guard = Arc::new(snapshot);
-            old_sstables
-        };
-
-        for (id, v) in old_sstables.iter() {
-            let path = self.path_of_sst(*id);
-            fs::remove_file(path)?;
         }
 
+        for sst in l0_to_compact.iter().chain(l1_to_compact.iter()) {
+            fs::remove_file(self.path_of_sst(*sst))?;
+        }
+
+        println!("force full compaction done, new SSTs: {:?}", ids);
         Ok(())
     }
 
