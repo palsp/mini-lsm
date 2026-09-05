@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 
 use super::StorageIterator;
 use crate::{
@@ -35,11 +35,57 @@ pub struct SstConcatIterator {
 
 impl SstConcatIterator {
     pub fn create_and_seek_to_first(sstables: Vec<Arc<SsTable>>) -> Result<Self> {
-        unimplemented!()
+        ensure!(!sstables.is_empty(), "empty sstables");
+
+        let first = &sstables[0];
+        let iter = SsTableIterator::create_and_seek_to_first(first.clone())?;
+
+        Ok(Self {
+            current: Some(iter),
+            next_sst_idx: 1,
+            sstables,
+        })
     }
 
     pub fn create_and_seek_to_key(sstables: Vec<Arc<SsTable>>, key: KeySlice) -> Result<Self> {
-        unimplemented!()
+        let (mut left, mut right) = (0_usize, sstables.len());
+
+        while left < right {
+            let mid = left + (right - left) / 2;
+            let table = &sstables[mid];
+
+            if table.first_key().as_key_slice().le(&key) && table.last_key().as_key_slice().ge(&key)
+            {
+                let iter = SsTableIterator::create_and_seek_to_key(table.clone(), key)?;
+                return Ok(Self {
+                    current: Some(iter),
+                    next_sst_idx: mid + 1,
+                    sstables,
+                });
+            }
+
+            if table.first_key().as_key_slice().ge(&key) {
+                right = mid;
+            } else {
+                left = mid + 1;
+            }
+        }
+
+        if left >= sstables.len() {
+            return Ok(Self {
+                current: None,
+                next_sst_idx: left + 1,
+                sstables,
+            });
+        }
+
+        let table = &sstables[left];
+        let iter = SsTableIterator::create_and_seek_to_first(table.clone())?;
+        Ok(Self {
+            current: Some(iter),
+            next_sst_idx: left + 1,
+            sstables,
+        })
     }
 }
 
@@ -47,19 +93,40 @@ impl StorageIterator for SstConcatIterator {
     type KeyType<'a> = KeySlice<'a>;
 
     fn key(&self) -> KeySlice<'_> {
-        unimplemented!()
+        self.current.as_ref().unwrap().key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.current.as_ref().unwrap().value()
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        if let Some(iter) = &self.current
+            && iter.is_valid()
+        {
+            return true;
+        }
+
+        false
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        if let Some(iter) = self.current.as_mut()
+            && iter.is_valid()
+        {
+            return iter.next();
+        }
+
+        if self.next_sst_idx > self.sstables.len() {
+            self.current = None;
+            return Ok(());
+        }
+
+        let next = &self.sstables[self.next_sst_idx];
+        self.current = Some(SsTableIterator::create_and_seek_to_first(next.clone())?);
+        self.next_sst_idx += 1;
+
+        Ok(())
     }
 
     fn num_active_iterators(&self) -> usize {
