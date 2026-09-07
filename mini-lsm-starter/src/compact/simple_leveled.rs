@@ -61,7 +61,7 @@ impl SimpleLeveledCompactionController {
             });
         }
 
-        for i in 0..snapshot.levels.len() - 1 {
+        for i in 0..(snapshot.levels.len() - 1) {
             let (cur, cur_sst_ids) = &snapshot.levels[i];
             let (lower_level, lower_sst_ids) = &snapshot.levels[i + 1];
 
@@ -73,7 +73,7 @@ impl SimpleLeveledCompactionController {
                     upper_level_sst_ids: cur_sst_ids.clone(),
                     lower_level: *lower_level,
                     lower_level_sst_ids: lower_sst_ids.clone(),
-                    is_lower_level_bottom_level: *lower_level == snapshot.levels.len() - 1,
+                    is_lower_level_bottom_level: *lower_level == snapshot.levels.len(),
                 });
             }
         }

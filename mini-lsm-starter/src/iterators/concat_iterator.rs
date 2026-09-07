@@ -107,31 +107,28 @@ impl StorageIterator for SstConcatIterator {
     }
 
     fn is_valid(&self) -> bool {
-        if let Some(iter) = &self.current
-            && iter.is_valid()
-        {
-            return true;
-        }
-
-        false
+        matches!(&self.current, Some(iter) if iter.is_valid())
     }
 
     fn next(&mut self) -> Result<()> {
-        if let Some(iter) = self.current.as_mut()
-            && iter.is_valid()
-        {
-            return iter.next();
+        if let Some(iter) = self.current.as_mut() {
+            iter.next()?;
+            if iter.is_valid() {
+                return Ok(());
+            }
         }
 
-        if self.next_sst_idx > self.sstables.len() {
-            self.current = None;
-            return Ok(());
+        while self.next_sst_idx < self.sstables.len() {
+            let next = &self.sstables[self.next_sst_idx];
+            self.next_sst_idx += 1;
+            let iter = SsTableIterator::create_and_seek_to_first(next.clone())?;
+            if iter.is_valid() {
+                self.current = Some(iter);
+                return Ok(());
+            }
         }
 
-        let next = &self.sstables[self.next_sst_idx];
-        self.current = Some(SsTableIterator::create_and_seek_to_first(next.clone())?);
-        self.next_sst_idx += 1;
-
+        self.current = None;
         Ok(())
     }
 

@@ -346,34 +346,42 @@ impl LsmStorageInner {
                     .map(Box::new)
             })
             .collect::<Result<Vec<_>>>()?;
-        let level_tables: Vec<Arc<SsTable>> = snapshot
+
+        let level_iters = snapshot
             .levels
             .iter()
-            .flat_map(|(level, sst_ids)| {
-                sst_ids.iter().filter_map(|id| {
-                    let table = &snapshot.sstables[id];
-                    if let Some(bloom) = &table.bloom
-                        && !bloom.may_contain(h)
-                    {
-                        return None;
-                    }
+            .map(|(level, sst_ids)| {
+                sst_ids
+                    .iter()
+                    .filter_map(|id| {
+                        let table = &snapshot.sstables[id];
+                        if let Some(bloom) = &table.bloom
+                            && !bloom.may_contain(h)
+                        {
+                            return None;
+                        }
 
-                    if key_within(
-                        key,
-                        table.first_key().as_key_slice(),
-                        table.last_key().as_key_slice(),
-                    ) {
-                        Some(table.clone())
-                    } else {
-                        None
-                    }
-                })
+                        if key_within(
+                            key,
+                            table.first_key().as_key_slice(),
+                            table.last_key().as_key_slice(),
+                        ) {
+                            Some(table.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
             })
-            .collect();
+            .map(|sstables| {
+                SstConcatIterator::create_and_seek_to_key(sstables, KeySlice::from_slice(key))
+                    .map(Box::new)
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         let iter = TwoMergeIterator::create(
             MergeIterator::create(l0_iters),
-            SstConcatIterator::create_and_seek_to_key(level_tables, KeySlice::from_slice(key))?,
+            MergeIterator::create(level_iters),
         )?;
         if iter.is_valid() && iter.key().raw_ref() == key && !iter.value().is_empty() {
             return Ok(Some(Bytes::copy_from_slice(iter.value())));
@@ -562,48 +570,50 @@ impl LsmStorageInner {
             MergeIterator::create(iters)
         };
 
-        let l1_iter = {
-            let l1_ids = snapshot
-                .levels
-                .first()
-                .map_or(Vec::new(), |level| level.1.clone());
-            let l1_sst = l1_ids
-                .iter()
-                .filter_map(|id| {
-                    let table = &snapshot.sstables[id];
-                    if range_overlap(
-                        lower,
-                        upper,
-                        table.first_key().as_key_slice(),
-                        table.last_key().as_key_slice(),
-                    ) {
-                        Some(table.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+        let mut level_iters = Vec::with_capacity(snapshot.levels.len());
+        for (level, sst_ids) in snapshot.levels.iter() {
+            let concat_iter = {
+                let ssts = sst_ids
+                    .iter()
+                    .filter_map(|id| {
+                        let table = &snapshot.sstables[id];
+                        if range_overlap(
+                            lower,
+                            upper,
+                            table.first_key().as_key_slice(),
+                            table.last_key().as_key_slice(),
+                        ) {
+                            Some(table.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
 
-            match lower {
-                Bound::Included(start_key) => SstConcatIterator::create_and_seek_to_key(
-                    l1_sst,
-                    KeySlice::from_slice(start_key),
-                )?,
-                Bound::Excluded(start_key) => {
-                    let mut iter = SstConcatIterator::create_and_seek_to_key(
-                        l1_sst,
+                match lower {
+                    Bound::Included(start_key) => SstConcatIterator::create_and_seek_to_key(
+                        ssts,
                         KeySlice::from_slice(start_key),
-                    )?;
-                    iter.next()?;
-                    iter
+                    )?,
+                    Bound::Excluded(start_key) => {
+                        let mut iter = SstConcatIterator::create_and_seek_to_key(
+                            ssts,
+                            KeySlice::from_slice(start_key),
+                        )?;
+                        iter.next()?;
+                        iter
+                    }
+                    Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(ssts)?,
                 }
-                Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(l1_sst)?,
-            }
-        };
+            };
+            level_iters.push(Box::new(concat_iter));
+        }
 
         let end_bound = upper.map(Bytes::copy_from_slice);
-        let merged_iter =
-            TwoMergeIterator::create(TwoMergeIterator::create(memtable_iter, l0_iter)?, l1_iter)?;
+        let merged_iter = TwoMergeIterator::create(
+            TwoMergeIterator::create(memtable_iter, l0_iter)?,
+            MergeIterator::create(level_iters),
+        )?;
 
         let lsm_iter = LsmIterator::new(merged_iter, end_bound)?;
 

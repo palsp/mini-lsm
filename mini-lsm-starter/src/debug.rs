@@ -12,7 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::fs::File;
+use std::io::Write;
+use std::path::Path;
 use std::sync::Arc;
+
+use anyhow::Result;
 
 use crate::{
     iterators::StorageIterator,
@@ -46,13 +51,32 @@ impl SsTable {
     pub fn dump_structure(self: &Arc<Self>) {
         let mut iter = SsTableIterator::create_and_seek_to_first(self.clone()).unwrap();
 
+        println!(
+            "id={} first={} last={}",
+            self.sst_id(),
+            String::from_utf8_lossy(self.first_key().as_key_slice().raw_ref()),
+            String::from_utf8_lossy(self.last_key().as_key_slice().raw_ref()),
+        );
+
         while iter.is_valid() {
-            println!(
-                "{}->{}",
-                String::from_utf8_lossy(iter.key().raw_ref()),
-                String::from_utf8_lossy(iter.value())
-            );
+            let key = String::from_utf8_lossy(iter.key().raw_ref());
+            let value = String::from_utf8_lossy(iter.value());
+            println!("{}->{}", key, value);
             iter.next().unwrap();
         }
+    }
+
+    pub fn dump_structure_to_file(self: &Arc<Self>, path: impl AsRef<Path>) -> Result<()> {
+        let mut file = File::create(path)?;
+        let mut iter = SsTableIterator::create_and_seek_to_first(self.clone())?;
+
+        while iter.is_valid() {
+            let key = String::from_utf8_lossy(iter.key().raw_ref());
+            let value = String::from_utf8_lossy(iter.value());
+            writeln!(file, "{}->{}", key, value)?;
+            iter.next()?;
+        }
+
+        Ok(())
     }
 }
