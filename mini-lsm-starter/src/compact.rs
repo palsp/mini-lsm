@@ -137,7 +137,39 @@ impl LsmStorageInner {
         };
         match task {
             CompactionTask::Leveled(leveled_compaction_task) => unimplemented!(),
-            CompactionTask::Tiered(tiered_compaction_task) => unimplemented!(),
+            CompactionTask::Tiered(tiered_compaction_task) => {
+                let tier_ssts = {
+                    let snapshot = self.state.read();
+                    for (level, sst_ids) in tiered_compaction_task.tiers.iter() {
+                        for sst_id in sst_ids.iter() {
+                            if !snapshot.sstables.contains_key(sst_id) {
+                                self.dump_structure();
+                                println!("sst_id not found");
+                            }
+                        }
+                    }
+                    tiered_compaction_task
+                        .tiers
+                        .iter()
+                        .map(|tier| {
+                            tier.1
+                                .iter()
+                                .map(|sst_id| snapshot.sstables[sst_id].clone())
+                                .collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>()
+                };
+
+                let iters = tier_ssts
+                    .into_iter()
+                    .map(|sstables| {
+                        SstConcatIterator::create_and_seek_to_first(sstables).map(Box::new)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
+                let merged_iter = MergeIterator::create(iters);
+                self.build_sstables(merged_iter, tiered_compaction_task.bottom_tier_included)
+            }
             CompactionTask::Simple(simple_leveled_compaction_task) => {
                 let (lower_ssts, upper_ssts) = {
                     let snapshot = self.state.read();
