@@ -18,7 +18,6 @@
 mod leveled;
 mod simple_leveled;
 mod tiered;
-
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::Arc;
@@ -327,7 +326,6 @@ impl LsmStorageInner {
     }
 
     fn trigger_compaction(&self) -> Result<()> {
-        let _guard = self.state_lock.lock();
         let maybe_task = {
             let snapshot = self.state.read();
             self.compaction_controller
