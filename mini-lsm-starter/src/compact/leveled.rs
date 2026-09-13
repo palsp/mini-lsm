@@ -188,9 +188,9 @@ impl LeveledCompactionController {
         snapshot: &LsmStorageState,
         task: &LeveledCompactionTask,
         output: &[usize],
-        _in_recovery: bool,
+        in_recovery: bool,
     ) -> (LsmStorageState, Vec<usize>) {
-        let mut new_snapshot = snapshot.clone();
+        let mut snapshot = snapshot.clone();
         let mut del = Vec::<usize>::new();
 
         let mut upper_sst_map = task
@@ -201,7 +201,7 @@ impl LeveledCompactionController {
         if let Some(upper_level) = task.upper_level {
             let idx = upper_level - 1;
 
-            new_snapshot.levels[idx].1.retain(|id| {
+            snapshot.levels[idx].1.retain(|id| {
                 let found = upper_sst_map.remove(id);
                 if found {
                     del.push(*id);
@@ -209,7 +209,7 @@ impl LeveledCompactionController {
                 !found
             });
         } else {
-            new_snapshot.l0_sstables.retain(|id| {
+            snapshot.l0_sstables.retain(|id| {
                 let found = upper_sst_map.remove(id);
                 if found {
                     del.push(*id);
@@ -240,17 +240,19 @@ impl LeveledCompactionController {
         assert!(lower_sst_map.is_empty());
         new_lower_level_ssts.extend(output);
 
-        new_lower_level_ssts.sort_by(|x, y| {
-            snapshot
-                .sstables
-                .get(x)
-                .unwrap()
-                .first_key()
-                .cmp(snapshot.sstables.get(y).unwrap().first_key())
-        });
+        if !in_recovery {
+            new_lower_level_ssts.sort_by(|x, y| {
+                snapshot
+                    .sstables
+                    .get(x)
+                    .unwrap()
+                    .first_key()
+                    .cmp(snapshot.sstables.get(y).unwrap().first_key())
+            });
+        }
 
-        new_snapshot.levels[task.lower_level - 1].1 = new_lower_level_ssts;
+        snapshot.levels[task.lower_level - 1].1 = new_lower_level_ssts;
 
-        (new_snapshot, del)
+        (snapshot, del)
     }
 }

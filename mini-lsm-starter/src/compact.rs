@@ -37,6 +37,7 @@ use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::key::KeySlice;
 use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
+use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -287,16 +288,17 @@ impl LsmStorageInner {
             let snapshot = self.state.read();
             (snapshot.l0_sstables.clone(), snapshot.levels[0].1.clone())
         };
-        let compaction_task = &CompactionTask::ForceFullCompaction {
+        let compaction_task = CompactionTask::ForceFullCompaction {
             l0_sstables: l0_to_compact.clone(),
             l1_sstables: l1_to_compact.clone(),
         };
-        let new_sstables = self.compact(compaction_task)?;
+        let new_sstables = self.compact(&compaction_task)?;
         let mut ids = Vec::with_capacity(new_sstables.len());
 
         println!("forced full compaction: {:?}", compaction_task);
 
         {
+            let state_lock = self.state_lock.lock();
             let mut guard = self.state.write();
             let mut snapshot = guard.as_ref().clone();
             for sst in l0_to_compact.iter().chain(l1_to_compact.iter()) {
@@ -320,6 +322,14 @@ impl LsmStorageInner {
                 .collect::<Vec<_>>();
             assert!(l0_sstables_map.is_empty());
             *guard = Arc::new(snapshot);
+            drop(guard);
+            self.sync_dir()?;
+            if let Some(manifest) = &self.manifest {
+                manifest.add_record(
+                    &state_lock,
+                    ManifestRecord::Compaction(compaction_task, ids.clone()),
+                )?;
+            }
         }
 
         for sst in l0_to_compact.iter().chain(l1_to_compact.iter()) {
@@ -341,6 +351,7 @@ impl LsmStorageInner {
             let ssts: Vec<Arc<SsTable>> = self.compact(&task)?;
             let sst_ids = ssts.iter().map(|sst| sst.sst_id()).collect::<Vec<_>>();
 
+            let state_lock = self.state_lock.lock();
             let sst_to_remove = {
                 let mut guard = self.state.write();
                 let mut snapshot = guard.as_ref().clone();
@@ -354,7 +365,13 @@ impl LsmStorageInner {
                 for sst_id in del.iter() {
                     snapshot.sstables.remove(sst_id);
                 }
+
                 *guard = Arc::new(snapshot);
+                drop(guard);
+                if let Some(manifest) = &self.manifest {
+                    self.sync_dir()?;
+                    manifest.add_record(&state_lock, ManifestRecord::Compaction(task, sst_ids))?;
+                }
                 del
             };
 
