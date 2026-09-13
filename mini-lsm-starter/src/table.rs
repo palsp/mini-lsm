@@ -56,7 +56,7 @@ impl BlockMeta {
         buf: &mut Vec<u8>,
     ) {
         for meta in block_meta.iter() {
-            buf.extend_from_slice(&(meta.offset as u16).to_be_bytes());
+            buf.extend_from_slice(&(meta.offset as u32).to_be_bytes());
             buf.extend_from_slice(&(meta.first_key.len() as u16).to_be_bytes());
             buf.extend_from_slice(meta.first_key.raw_ref());
             buf.extend_from_slice(&(meta.last_key.len() as u16).to_be_bytes());
@@ -71,8 +71,10 @@ impl BlockMeta {
         let data = buf.chunk();
         let size = buf.remaining();
         while cur < size {
-            let offset = u16::from_be_bytes([data[cur], data[cur + 1]]) as usize;
-            cur += 2;
+            let offset =
+                u32::from_be_bytes([data[cur], data[cur + 1], data[cur + 2], data[cur + 3]])
+                    as usize;
+            cur += 4;
             let first_key_len = u16::from_be_bytes([data[cur], data[cur + 1]]);
             cur += 2;
 
