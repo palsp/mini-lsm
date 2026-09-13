@@ -15,7 +15,7 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use std::ops::Bound::{self, Excluded, Included};
+use std::ops::Bound::{self};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -23,11 +23,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::Result;
 use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
-use nom::CompareResult::Error;
 use ouroboros::self_referencing;
 
 use crate::iterators::StorageIterator;
-use crate::key::{Key, KeySlice};
+use crate::key::KeySlice;
 use crate::table::SsTableBuilder;
 use crate::wal::Wal;
 

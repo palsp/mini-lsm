@@ -23,10 +23,8 @@ use std::sync::atomic::AtomicUsize;
 use std::vec;
 
 use anyhow::{Result, anyhow, ensure};
-use bytes::{Buf, Bytes};
-use nom::AsBytes;
+use bytes::Bytes;
 use parking_lot::{Mutex, MutexGuard, RwLock};
-use serde_json::map::Keys;
 
 use crate::block::Block;
 use crate::compact::{
@@ -42,7 +40,7 @@ use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::{MemTable, MemTableIterator};
 use crate::mvcc::LsmMvccInner;
-use crate::table::{SsTable, SsTableBuilder, SsTableIterator, bloom};
+use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 

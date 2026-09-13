@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{Result, ensure};
+use anyhow::Result;
 
 use super::StorageIterator;
 use crate::{
