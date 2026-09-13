@@ -95,119 +95,93 @@ impl LeveledCompactionController {
         &self,
         snapshot: &LsmStorageState,
     ) -> Option<LeveledCompactionTask> {
-        if let Some(bottom) = snapshot.levels.last() {
-            let target_level_size = self.compute_target_size(snapshot, bottom);
-
-            let base_level = target_level_size
-                .iter()
-                .position(|&x| x > 0)
-                .unwrap()
-                .add(1);
-            if snapshot.l0_sstables.len() >= self.options.level0_file_num_compaction_trigger {
-                println!("flush L0 SST to base level {}", base_level);
-
-                let overlap_sst_ids =
-                    self.find_overlapping_ssts(snapshot, &snapshot.l0_sstables, base_level);
-                return Some(LeveledCompactionTask {
-                    upper_level: None,
-                    upper_level_sst_ids: snapshot.l0_sstables.clone(),
-                    lower_level: base_level,
-                    lower_level_sst_ids: overlap_sst_ids,
-                    is_lower_level_bottom_level: base_level == bottom.0,
-                });
-            }
-
-            let real_level_size = snapshot
-                .levels
-                .iter()
-                .map(|level| compute_size(snapshot, &level.1))
-                .collect::<Vec<_>>();
-
-            let (mut highest_priority, mut lower_level, mut upper_level) = (-1_f32, 0, 0);
-            for (i, &target_size) in target_level_size
-                .iter()
-                .enumerate()
-                .take(snapshot.levels.len() - 1)
-            {
-                let current = &snapshot.levels[i];
-                let priority =
-                    (compute_size(snapshot, &snapshot.levels[i].1) as f32) / (target_size as f32);
-
-                if priority > highest_priority {
-                    highest_priority = priority;
-                    upper_level = current.0;
-                    lower_level = current.0 + 1;
-                }
-            }
-            if highest_priority > 1.0 {
-                let selected_sst = snapshot.levels[upper_level - 1]
+        let mut base_level = self.options.max_levels;
+        let mut target_level_size = (0..self.options.max_levels).map(|_| 0).collect::<Vec<_>>();
+        let mut real_level_size = Vec::with_capacity(self.options.max_levels);
+        for i in 0..self.options.max_levels {
+            real_level_size.push(
+                snapshot.levels[i]
                     .1
                     .iter()
-                    .min()
-                    .copied()
-                    .unwrap(); // select oldest sst
-                let overlap_sst_ids =
-                    self.find_overlapping_ssts(snapshot, &[selected_sst], lower_level);
-                println!(
-                    "target level sizes: {:?}, real level sizes: {:?}, base_level: {}",
-                    target_level_size
-                        .iter()
-                        .map(|x| format!("{:.3}MB", *x as f64 / 1024.0 / 1024.0))
-                        .collect::<Vec<_>>(),
-                    real_level_size
-                        .iter()
-                        .map(|x| format!("{:.3}MB", *x as f64 / 1024.0 / 1024.0))
-                        .collect::<Vec<_>>(),
-                    base_level,
-                );
-                println!(
-                    "compaction triggered by priority: {upper_level} , select {selected_sst} for compaction",
-                );
-                return Some(LeveledCompactionTask {
-                    upper_level: Some(upper_level),
-                    upper_level_sst_ids: vec![selected_sst],
-                    lower_level,
-                    lower_level_sst_ids: overlap_sst_ids,
-                    is_lower_level_bottom_level: lower_level == bottom.0,
-                });
+                    .map(|x| snapshot.sstables[x].table_size())
+                    .sum::<u64>() as usize,
+            );
+        }
+        let base_level_size_bytes = self.options.base_level_size_mb * 1024 * 1024;
+
+        target_level_size[self.options.max_levels - 1] =
+            real_level_size[self.options.max_levels - 1].max(base_level_size_bytes);
+        // select base level and compute target level size
+        for i in (0..(self.options.max_levels - 1)).rev() {
+            let next_level_size = target_level_size[i + 1];
+            let this_level_size = next_level_size / self.options.level_size_multiplier;
+            if next_level_size > base_level_size_bytes {
+                target_level_size[i] = this_level_size;
             }
+
+            if target_level_size[i] > 0 {
+                base_level = i + 1;
+            }
+        }
+
+        // Flush L0 SST is is the top priority
+        if snapshot.l0_sstables.len() >= self.options.level0_file_num_compaction_trigger {
+            println!("flush L0 SST to base level {}", base_level);
+            let overlap_sst_ids =
+                self.find_overlapping_ssts(snapshot, &snapshot.l0_sstables, base_level);
+            return Some(LeveledCompactionTask {
+                upper_level: None,
+                upper_level_sst_ids: snapshot.l0_sstables.clone(),
+                lower_level: base_level,
+                lower_level_sst_ids: overlap_sst_ids,
+                is_lower_level_bottom_level: base_level == self.options.max_levels,
+            });
+        }
+
+        let (mut highest_priority, mut level) = (-1_f32, 0);
+        for (i, &target_size) in target_level_size
+            .iter()
+            .enumerate()
+            .take(snapshot.levels.len() - 1)
+        {
+            let current = &snapshot.levels[i];
+            let priority = (real_level_size[i] as f32) / (target_size as f32);
+
+            if priority > highest_priority {
+                highest_priority = priority;
+                level = current.0;
+            }
+        }
+        if highest_priority > 1.0 {
+            let lower_level = level + 1;
+            let selected_sst = snapshot.levels[level - 1].1.iter().min().copied().unwrap(); // select oldest sst
+            let overlap_sst_ids =
+                self.find_overlapping_ssts(snapshot, &[selected_sst], lower_level);
+            println!(
+                "target level sizes: {:?}, real level sizes: {:?}, base_level: {}",
+                target_level_size
+                    .iter()
+                    .map(|x| format!("{:.3}MB", *x as f64 / 1024.0 / 1024.0))
+                    .collect::<Vec<_>>(),
+                real_level_size
+                    .iter()
+                    .map(|x| format!("{:.3}MB", *x as f64 / 1024.0 / 1024.0))
+                    .collect::<Vec<_>>(),
+                base_level,
+            );
+            println!(
+                "compaction triggered by priority: {level} , select {selected_sst} for compaction",
+            );
+            return Some(LeveledCompactionTask {
+                upper_level: Some(level),
+                upper_level_sst_ids: vec![selected_sst],
+                lower_level,
+                lower_level_sst_ids: overlap_sst_ids,
+                is_lower_level_bottom_level: lower_level == self.options.max_levels,
+            });
         }
 
         None
-    }
-
-    fn compute_target_size(
-        &self,
-        snapshot: &LsmStorageState,
-        bottom: &(usize, Vec<usize>),
-    ) -> Vec<u64> {
-        let base_level_size = (self.options.base_level_size_mb as u64) * 1024 * 1024;
-        let bottom_size = compute_size(snapshot, &bottom.1);
-        let is_bottom_level_exceed_base = bottom_size > base_level_size;
-        let mut target_size = vec![0; snapshot.levels.len()];
-
-        let mut found_positive_target_below_base = false;
-        for (i, level) in snapshot.levels.iter().enumerate().rev() {
-            target_size[i] = match (
-                level.0,
-                is_bottom_level_exceed_base,
-                found_positive_target_below_base,
-            ) {
-                (l_val, true, _) if l_val == bottom.0 => bottom_size,
-                (l_val, false, _) if l_val == bottom.0 => base_level_size,
-                (_, true, true) => 0,
-                (_, true, false) => {
-                    let size = target_size[i + 1] / (self.options.level_size_multiplier as u64);
-                    if size <= base_level_size {
-                        found_positive_target_below_base = true
-                    }
-                    size
-                }
-                (_, false, _) => 0,
-            };
-        }
-
-        target_size
     }
 
     pub fn apply_compaction_result(
@@ -280,10 +254,4 @@ impl LeveledCompactionController {
 
         (new_snapshot, del)
     }
-}
-
-fn compute_size(snapshot: &LsmStorageState, sst_ids: &[usize]) -> u64 {
-    sst_ids.iter().fold(0, |acc, sst_id| {
-        acc + snapshot.sstables[sst_id].table_size()
-    })
 }

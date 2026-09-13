@@ -135,48 +135,6 @@ impl LsmStorageInner {
             Arc::clone(&guard)
         };
         match task {
-            CompactionTask::Leveled(leveled_compaction_task) => {
-                let (lower_ssts, upper_ssts) = {
-                    let snapshot = self.state.read();
-
-                    let lower_ssts = leveled_compaction_task
-                        .lower_level_sst_ids
-                        .iter()
-                        .map(|id| snapshot.sstables[id].clone())
-                        .collect::<Vec<_>>();
-
-                    let upper_ssts = leveled_compaction_task
-                        .upper_level_sst_ids
-                        .iter()
-                        .map(|id| snapshot.sstables[id].clone())
-                        .collect::<Vec<_>>();
-                    (lower_ssts, upper_ssts)
-                };
-
-                let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_ssts)?;
-                if let Some(upper_level) = leveled_compaction_task.upper_level {
-                    let upper_iter = SstConcatIterator::create_and_seek_to_first(upper_ssts)?;
-                    let two_merge_iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
-                    self.build_sstables(
-                        two_merge_iter,
-                        leveled_compaction_task.is_lower_level_bottom_level,
-                    )
-                } else {
-                    // L0 compaction
-                    let iters: Vec<Box<SsTableIterator>> = upper_ssts
-                        .iter()
-                        .map(|sst| {
-                            SsTableIterator::create_and_seek_to_first(sst.clone()).map(Box::new)
-                        })
-                        .collect::<Result<Vec<_>>>()?;
-                    let upper_iter = MergeIterator::create(iters);
-                    let two_merge_iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
-                    self.build_sstables(
-                        two_merge_iter,
-                        leveled_compaction_task.is_lower_level_bottom_level,
-                    )
-                }
-            }
             CompactionTask::Tiered(tiered_compaction_task) => {
                 let tier_ssts = {
                     let snapshot = self.state.read();
@@ -210,18 +168,30 @@ impl LsmStorageInner {
                 let merged_iter = MergeIterator::create(iters);
                 self.build_sstables(merged_iter, tiered_compaction_task.bottom_tier_included)
             }
-            CompactionTask::Simple(simple_leveled_compaction_task) => {
+
+            CompactionTask::Leveled(LeveledCompactionTask {
+                upper_level,
+                upper_level_sst_ids,
+                lower_level,
+                lower_level_sst_ids,
+                is_lower_level_bottom_level,
+            })
+            | CompactionTask::Simple(SimpleLeveledCompactionTask {
+                upper_level,
+                upper_level_sst_ids,
+                lower_level,
+                lower_level_sst_ids,
+                is_lower_level_bottom_level,
+            }) => {
                 let (lower_ssts, upper_ssts) = {
                     let snapshot = self.state.read();
 
-                    let lower_ssts = simple_leveled_compaction_task
-                        .lower_level_sst_ids
+                    let lower_ssts = lower_level_sst_ids
                         .iter()
                         .map(|id| snapshot.sstables[id].clone())
                         .collect::<Vec<_>>();
 
-                    let upper_ssts = simple_leveled_compaction_task
-                        .upper_level_sst_ids
+                    let upper_ssts = upper_level_sst_ids
                         .iter()
                         .map(|id| snapshot.sstables[id].clone())
                         .collect::<Vec<_>>();
@@ -229,13 +199,10 @@ impl LsmStorageInner {
                 };
 
                 let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_ssts)?;
-                if let Some(upper_level) = simple_leveled_compaction_task.upper_level {
+                if let Some(upper_level) = upper_level {
                     let upper_iter = SstConcatIterator::create_and_seek_to_first(upper_ssts)?;
                     let two_merge_iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
-                    self.build_sstables(
-                        two_merge_iter,
-                        simple_leveled_compaction_task.is_lower_level_bottom_level,
-                    )
+                    self.build_sstables(two_merge_iter, *is_lower_level_bottom_level)
                 } else {
                     // L0 compaction
                     let iters: Vec<Box<SsTableIterator>> = upper_ssts
@@ -246,10 +213,7 @@ impl LsmStorageInner {
                         .collect::<Result<Vec<_>>>()?;
                     let upper_iter = MergeIterator::create(iters);
                     let two_merge_iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
-                    self.build_sstables(
-                        two_merge_iter,
-                        simple_leveled_compaction_task.is_lower_level_bottom_level,
-                    )
+                    self.build_sstables(two_merge_iter, *is_lower_level_bottom_level)
                 }
             }
             CompactionTask::ForceFullCompaction {
