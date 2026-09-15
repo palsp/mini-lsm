@@ -353,8 +353,8 @@ impl LsmStorageInner {
 
             let state_lock = self.state_lock.lock();
             let sst_to_remove = {
-                let mut guard = self.state.write();
-                let mut snapshot = guard.as_ref().clone();
+                // Only read is enough because state_lock is already acquired
+                let mut snapshot = self.state.read().as_ref().clone();
                 for sst in ssts {
                     snapshot.sstables.insert(sst.sst_id(), sst);
                 }
@@ -366,8 +366,7 @@ impl LsmStorageInner {
                     snapshot.sstables.remove(sst_id);
                 }
 
-                *guard = Arc::new(snapshot);
-                drop(guard);
+                *self.state.write() = Arc::new(snapshot);
                 if let Some(manifest) = &self.manifest {
                     self.sync_dir()?;
                     manifest.add_record(&state_lock, ManifestRecord::Compaction(task, sst_ids))?;
