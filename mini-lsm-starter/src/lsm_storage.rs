@@ -182,6 +182,19 @@ impl MiniLsm {
         self.flush_notifier.send(())?;
         self.compaction_notifier.send(()).ok();
 
+        let mut compaction_thread = self.compaction_thread.lock();
+        if let Some(compaction_thead) = compaction_thread.take() {
+            compaction_thead
+                .join()
+                .map_err(|e| anyhow::anyhow!("{:?}", e))?;
+        }
+        let mut flush_thread = self.flush_thread.lock();
+        if let Some(flush_thread) = flush_thread.take() {
+            flush_thread
+                .join()
+                .map_err(|e| anyhow::anyhow!("{:?}", e))?;
+        }
+
         if self.inner.options.enable_wal {
             self.inner.sync()?;
             self.inner.sync_dir()?;
