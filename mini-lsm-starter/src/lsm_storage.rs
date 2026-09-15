@@ -411,6 +411,7 @@ impl LsmStorageInner {
     }
 
     pub fn sync(&self) -> Result<()> {
+        let _state_lock = self.state_lock.lock();
         self.state.read().memtable.sync_wal()?;
         Ok(())
     }
