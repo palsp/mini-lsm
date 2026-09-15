@@ -16,11 +16,11 @@
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
 use anyhow::Result;
-use bytes::Bytes;
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use crossbeam_skiplist::SkipMap;
 use parking_lot::Mutex;
-use std::fs::File;
-use std::io::BufWriter;
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -31,16 +31,50 @@ pub struct Wal {
 }
 
 impl Wal {
-    pub fn create(_path: impl AsRef<Path>) -> Result<Self> {
-        unimplemented!()
+    pub fn create(path: impl AsRef<Path>) -> Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(path)?;
+
+        let buf_writer = BufWriter::new(file);
+
+        Ok(Self {
+            file: Arc::new(Mutex::new(buf_writer)),
+        })
     }
 
-    pub fn recover(_path: impl AsRef<Path>, _skiplist: &SkipMap<Bytes, Bytes>) -> Result<Self> {
-        unimplemented!()
+    pub fn recover(path: impl AsRef<Path>, skiplist: &SkipMap<Bytes, Bytes>) -> Result<Self> {
+        let data = fs::read(&path)?;
+        let mut data = data.as_slice();
+
+        while data.remaining() > 0 {
+            let key_len = data.get_u16();
+            let key = data.copy_to_bytes(key_len as usize);
+            let value_len = data.get_u16();
+            let value = data.copy_to_bytes(value_len as usize);
+            skiplist.insert(key, value);
+        }
+
+        Self::create(path)
     }
 
-    pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        unimplemented!()
+    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
+        let mut buf = Vec::new();
+
+        let key_len = u16::try_from(key.len())?;
+        let val_len = u16::try_from(value.len())?;
+
+        buf.put_u16(key_len);
+        buf.put(key);
+        buf.put_u16(val_len);
+        buf.put(value);
+
+        let mut writer = self.file.lock();
+        writer.write_all(&buf)?;
+
+        Ok(())
     }
 
     /// Implement this in week 3, day 5.
@@ -49,6 +83,10 @@ impl Wal {
     }
 
     pub fn sync(&self) -> Result<()> {
-        unimplemented!()
+        let mut writer = self.file.lock();
+        writer.flush()?;
+
+        writer.get_mut().sync_all()?;
+        Ok(())
     }
 }

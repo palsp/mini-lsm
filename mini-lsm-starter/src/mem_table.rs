@@ -63,13 +63,18 @@ impl MemTable {
     }
 
     /// Create a new mem-table with WAL
-    pub fn create_with_wal(_id: usize, _path: impl AsRef<Path>) -> Result<Self> {
-        unimplemented!()
+    pub fn create_with_wal(id: usize, path: impl AsRef<Path>) -> Result<Self> {
+        let mut memtable = Self::create(id);
+        memtable.wal = Some(Wal::create(path)?);
+        Ok(memtable)
     }
 
     /// Create a memtable from WAL
-    pub fn recover_from_wal(_id: usize, _path: impl AsRef<Path>) -> Result<Self> {
-        unimplemented!()
+    pub fn recover_from_wal(id: usize, path: impl AsRef<Path>) -> Result<Self> {
+        let mut memtable = Self::create(id);
+        let wal = Wal::recover(path, &memtable.map)?;
+        memtable.wal = Some(wal);
+        Ok(memtable)
     }
 
     pub fn for_testing_put_slice(&self, key: &[u8], value: &[u8]) -> Result<()> {
@@ -106,6 +111,10 @@ impl MemTable {
             .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
         self.approximate_size
             .fetch_add(key.len() + value.len(), Ordering::SeqCst);
+
+        if let Some(wal) = &self.wal {
+            wal.put(key, value)?;
+        }
         Ok(())
     }
 
