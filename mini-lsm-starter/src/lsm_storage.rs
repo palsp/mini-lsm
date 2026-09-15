@@ -176,12 +176,29 @@ impl Drop for MiniLsm {
 
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
+        // sync files created during open i.e. MANIFEST, first wal etc.
+        self.inner.sync_dir()?;
+
         self.flush_notifier.send(())?;
+        self.compaction_notifier.send(()).ok();
+
         if self.inner.options.enable_wal {
-            self.sync()?;
-        } else {
-            self.force_flush_non_empty_memtable()?;
+            self.inner.sync()?;
+            self.inner.sync_dir()?;
+            return Ok(());
         }
+
+        if !self.inner.state.read().memtable.is_empty() {
+            // Only freeze memtable without adding new record to manifest
+            self.inner
+                .freeze_memtable_with_memtable(Arc::new(MemTable::create(
+                    self.inner.next_sst_id(),
+                )))?;
+        }
+        while !self.inner.state.read().imm_memtables.is_empty() {
+            self.inner.force_flush_next_imm_memtable()?;
+        }
+        self.inner.sync_dir()?;
         Ok(())
     }
 
@@ -245,17 +262,6 @@ impl MiniLsm {
                 .force_freeze_memtable(&self.inner.state_lock.lock())?;
         }
         if !self.inner.state.read().imm_memtables.is_empty() {
-            self.inner.force_flush_next_imm_memtable()?;
-        }
-        Ok(())
-    }
-
-    pub fn force_flush_non_empty_memtable(&self) -> Result<()> {
-        if !self.inner.state.read().memtable.is_empty() {
-            self.inner
-                .force_freeze_memtable(&self.inner.state_lock.lock())?;
-        }
-        while !self.inner.state.read().imm_memtables.is_empty() {
             self.inner.force_flush_next_imm_memtable()?;
         }
         Ok(())
@@ -405,12 +411,7 @@ impl LsmStorageInner {
     }
 
     pub fn sync(&self) -> Result<()> {
-        let state = self.state.write();
-        state.memtable.sync_wal()?;
-
-        for imm_memtable in state.imm_memtables.iter() {
-            imm_memtable.sync_wal()?;
-        }
+        self.state.read().memtable.sync_wal()?;
         Ok(())
     }
 
@@ -578,25 +579,33 @@ impl LsmStorageInner {
     /// Force freeze the current memtable to an immutable memtable
     pub fn force_freeze_memtable(&self, state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
         let id = self.next_sst_id();
-        let memtable: Arc<MemTable>;
-        if self.options.enable_wal
-            && let Some(manifest) = &self.manifest
-        {
-            self.sync()?;
-            manifest.add_record(state_lock_observer, ManifestRecord::NewMemtable(id))?;
-            memtable = Arc::new(MemTable::create_with_wal(id, self.path_of_wal(id))?);
+        let memtable = if self.options.enable_wal {
+            Arc::new(MemTable::create_with_wal(id, self.path_of_wal(id))?)
         } else {
-            memtable = Arc::new(MemTable::create(id));
+            Arc::new(MemTable::create(id))
+        };
+
+        // sync wal of newly created memtable
+        if self.options.enable_wal {
+            self.sync_dir()?;
+        }
+        if let Some(manifest) = &self.manifest {
+            manifest.add_record(state_lock_observer, ManifestRecord::NewMemtable(id))?;
         }
 
-        {
-            let mut guard = self.state.write();
-            let mut snapshot = guard.as_ref().clone();
-            let old_memtable = std::mem::replace(&mut snapshot.memtable, memtable);
-            snapshot.imm_memtables.insert(0, old_memtable);
-            *guard = Arc::new(snapshot);
-        }
+        self.freeze_memtable_with_memtable(memtable)?;
 
+        Ok(())
+    }
+
+    fn freeze_memtable_with_memtable(&self, memtable: Arc<MemTable>) -> Result<()> {
+        let mut guard = self.state.write();
+        let mut snapshot = guard.as_ref().clone();
+        let old_memtable = std::mem::replace(&mut snapshot.memtable, memtable);
+        snapshot.imm_memtables.insert(0, old_memtable.clone());
+        *guard = Arc::new(snapshot);
+        drop(guard);
+        old_memtable.sync_wal()?;
         Ok(())
     }
 
