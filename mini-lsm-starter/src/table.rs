@@ -55,13 +55,18 @@ impl BlockMeta {
         #[allow(clippy::ptr_arg)] // remove this allow after you finish
         buf: &mut Vec<u8>,
     ) {
+        let mut data = Vec::<u8>::new();
         for meta in block_meta.iter() {
-            buf.extend_from_slice(&(meta.offset as u32).to_be_bytes());
-            buf.extend_from_slice(&(meta.first_key.len() as u16).to_be_bytes());
-            buf.extend_from_slice(meta.first_key.raw_ref());
-            buf.extend_from_slice(&(meta.last_key.len() as u16).to_be_bytes());
-            buf.extend_from_slice(meta.last_key.raw_ref());
+            data.extend_from_slice(&(meta.offset as u32).to_be_bytes());
+            data.extend_from_slice(&(meta.first_key.len() as u16).to_be_bytes());
+            data.extend_from_slice(meta.first_key.raw_ref());
+            data.extend_from_slice(&(meta.last_key.len() as u16).to_be_bytes());
+            data.extend_from_slice(meta.last_key.raw_ref());
         }
+
+        let h = crc32fast::hash(&data);
+        buf.extend_from_slice(&data);
+        buf.extend_from_slice(&h.to_be_bytes());
     }
 
     /// Decode block meta from a buffer.
@@ -69,7 +74,18 @@ impl BlockMeta {
         let mut block_meta: Vec<BlockMeta> = Vec::new();
         let mut cur = 0;
         let data = buf.chunk();
-        let size = buf.remaining();
+        let h = u32::from_be_bytes([
+            data[data.len() - 4],
+            data[data.len() - 3],
+            data[data.len() - 2],
+            data[data.len() - 1],
+        ]);
+
+        if h != crc32fast::hash(&data[..data.len() - 4]) {
+            panic!("block meta is corrupted")
+        }
+
+        let size = buf.remaining() - 4;
         while cur < size {
             let offset =
                 u32::from_be_bytes([data[cur], data[cur + 1], data[cur + 2], data[cur + 3]])

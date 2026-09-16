@@ -14,7 +14,7 @@
 
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use bytes::{BufMut, Bytes, BytesMut};
 
 /// Implements a bloom filter
@@ -61,8 +61,17 @@ impl<T: AsMut<[u8]>> BitSliceMut for T {
 impl Bloom {
     /// Decode a bloom filter
     pub fn decode(buf: &[u8]) -> Result<Self> {
-        let filter = &buf[..buf.len() - 1];
-        let k = buf[buf.len() - 1];
+        let h = u32::from_be_bytes([
+            buf[buf.len() - 4],
+            buf[buf.len() - 3],
+            buf[buf.len() - 2],
+            buf[buf.len() - 1],
+        ]);
+
+        let k = buf[buf.len() - 5];
+        let filter = &buf[..buf.len() - 5];
+
+        ensure!(h == Self::hash(filter, k), "bloom is corrupted");
         Ok(Self {
             filter: filter.to_vec().into(),
             k,
@@ -71,8 +80,16 @@ impl Bloom {
 
     /// Encode a bloom filter
     pub fn encode(&self, buf: &mut Vec<u8>) {
+        let h = Self::hash(&self.filter, self.k);
         buf.extend(&self.filter);
         buf.put_u8(self.k);
+        buf.extend_from_slice(&h.to_be_bytes());
+    }
+
+    fn hash(filter: &[u8], k: u8) -> u32 {
+        let mut data = Vec::from(filter);
+        data.put_u8(k);
+        crc32fast::hash(&data)
     }
 
     /// Get bloom filter bits per key from entries count and FPR

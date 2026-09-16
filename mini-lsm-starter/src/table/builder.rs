@@ -132,6 +132,7 @@ impl SsTableBuilder {
         let bits_per_key = Bloom::bloom_bits_per_key(self.key_hashes.len(), 0.01);
         let bloom = Bloom::build_from_key_hashes(&self.key_hashes, bits_per_key);
         bloom.encode(&mut self.data);
+
         self.data.extend_from_slice(&bloom_offset.to_be_bytes());
 
         let file = FileObject::create(path.as_ref(), self.data)?;
