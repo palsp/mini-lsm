@@ -70,8 +70,12 @@ impl SsTableBuilder {
         let key_bytes = key.to_key_vec().into_key_bytes();
         if !self.builder.add(key, value) {
             let builder = std::mem::replace(&mut self.builder, BlockBuilder::new(self.block_size));
-            self.data.append(&mut builder.build().encode().to_vec());
+            let mut data = builder.build().encode().to_vec();
+            let h = crc32fast::hash(&data);
+            self.data.append(&mut data);
+            self.data.extend_from_slice(&h.to_be_bytes());
 
+            // Create new block
             let offset = self.data.len();
             let _ = self.builder.add(key, value);
             self.meta.push(BlockMeta {
@@ -112,8 +116,10 @@ impl SsTableBuilder {
         path: impl AsRef<Path>,
     ) -> Result<SsTable> {
         // append from on-going builder
-        self.data
-            .append(&mut self.builder.build().encode().to_vec());
+        let mut data = self.builder.build().encode().to_vec();
+        let h = crc32fast::hash(&data);
+        self.data.append(&mut data);
+        self.data.extend_from_slice(&h.to_be_bytes());
 
         // append metadata
         let block_meta_offset = self.data.len() as u32;

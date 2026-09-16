@@ -95,10 +95,12 @@ impl Block {
             offsets[0] == 0,
             "first block entry must start at offset zero"
         );
-        ensure!(
-            offsets.windows(2).all(|pair| pair[0] < pair[1]),
-            "block entry offsets are not strictly increasing"
-        );
+
+        let t = offsets.windows(2).all(|pair| pair[0] < pair[1]);
+        if !t {
+            println!("t")
+        }
+        ensure!(t, "block entry offsets are not strictly increasing");
 
         for (idx, offset) in offsets.iter().enumerate() {
             let entry_start = usize::from(*offset);

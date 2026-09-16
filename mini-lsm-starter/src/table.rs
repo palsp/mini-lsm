@@ -240,7 +240,7 @@ impl SsTable {
             self.block_meta[block_idx + 1].offset
         };
 
-        let len = (next_block_start - meta.offset) as u64;
+        let len = (next_block_start - meta.offset - 4) as u64;
         let data = self.file.read(meta.offset as u64, len)?;
         let block = Block::decode(&data);
         Ok(Arc::new(block))
