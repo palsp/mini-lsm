@@ -15,8 +15,8 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use anyhow::Result;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use anyhow::{Result, ensure};
+use bytes::{Buf, BufMut, Bytes};
 use crossbeam_skiplist::SkipMap;
 use parking_lot::Mutex;
 use std::fs::{self, File, OpenOptions};
@@ -50,10 +50,22 @@ impl Wal {
         let mut data = data.as_slice();
 
         while data.remaining() > 0 {
+            let mut hasher = crc32fast::Hasher::new();
             let key_len = data.get_u16();
+            hasher.update(&key_len.to_be_bytes());
+
             let key = data.copy_to_bytes(key_len as usize);
-            let value_len = data.get_u16();
-            let value = data.copy_to_bytes(value_len as usize);
+            hasher.update(key.iter().as_slice());
+
+            let val_len = data.get_u16();
+            hasher.update(&val_len.to_be_bytes());
+
+            let value = data.copy_to_bytes(val_len as usize);
+            hasher.update(value.iter().as_slice());
+
+            let h = data.get_u32();
+            ensure!(h == hasher.finalize(), "wal is corrupted");
+
             skiplist.insert(key, value);
         }
 
@@ -66,14 +78,25 @@ impl Wal {
         let key_len = u16::try_from(key.len())?;
         let val_len = u16::try_from(value.len())?;
 
+        let mut hasher = crc32fast::Hasher::new();
+
         buf.put_u16(key_len);
+        hasher.update(&key_len.to_be_bytes());
+
         buf.put(key);
+        hasher.update(key);
+
         buf.put_u16(val_len);
+        hasher.update(&val_len.to_be_bytes());
+
         buf.put(value);
+        hasher.update(value);
+
+        let h = hasher.finalize();
+        buf.extend_from_slice(&h.to_be_bytes());
 
         let mut writer = self.file.lock();
         writer.write_all(&buf)?;
-
         Ok(())
     }
 
