@@ -35,6 +35,7 @@ use crate::lsm_storage::BlockCache;
 use self::bloom::Bloom;
 
 pub(crate) const SIZEOF_U16: usize = std::mem::size_of::<u16>();
+pub(crate) const SIZEOF_U32: usize = std::mem::size_of::<u32>();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockMeta {
@@ -74,6 +75,9 @@ impl BlockMeta {
         let mut block_meta: Vec<BlockMeta> = Vec::new();
         let mut cur = 0;
         let data = buf.chunk();
+        if data.remaining() < 4 {
+            panic!("block meta is truncated")
+        }
         let h = u32::from_be_bytes([
             data[data.len() - 4],
             data[data.len() - 3],
@@ -176,7 +180,7 @@ impl SsTable {
     /// Open SSTable from a file.
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
         let buf = file.read(0, file.size())?;
-        ensure!(buf.len() >= SIZEOF_U16, "table footer is truncated");
+        ensure!(buf.len() >= SIZEOF_U32, "table footer is truncated");
         let bloom_offset_start = buf.len() - 4;
         let bloom_offset = u32::from_be_bytes([
             buf[bloom_offset_start],
@@ -256,9 +260,15 @@ impl SsTable {
             self.block_meta[block_idx + 1].offset
         };
 
-        let len = (next_block_start - meta.offset - 4) as u64;
-        let data = self.file.read(meta.offset as u64, len)?;
-        let block = Block::decode(&data);
+        let len = next_block_start - meta.offset;
+        let data = self.file.read(meta.offset as u64, len as u64)?;
+        let h = u32::from_be_bytes([data[len - 4], data[len - 3], data[len - 2], data[len - 1]]);
+        ensure!(
+            h == crc32fast::hash(&data[..(len - 4)]),
+            "block is corrupted"
+        );
+        let block = Block::decode(&data[..(len - 4)]);
+
         Ok(Arc::new(block))
     }
 

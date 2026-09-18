@@ -51,15 +51,20 @@ impl Wal {
 
         while data.remaining() > 0 {
             let mut hasher = crc32fast::Hasher::new();
+
+            ensure!(data.remaining() >= 2, "key_len is truncated");
             let key_len = data.get_u16();
             hasher.update(&key_len.to_be_bytes());
 
+            ensure!(data.remaining() >= key_len as usize, "key is truncated");
             let key = data.copy_to_bytes(key_len as usize);
             hasher.update(key.iter().as_slice());
 
+            ensure!(data.remaining() >= 2, "val_len is truncated");
             let val_len = data.get_u16();
             hasher.update(&val_len.to_be_bytes());
 
+            ensure!(data.remaining() >= val_len as usize, "value is truncated");
             let value = data.copy_to_bytes(val_len as usize);
             hasher.update(value.iter().as_slice());
 
