@@ -12,14 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
-use bytes::Bytes;
 
 use super::{BlockMeta, SsTable};
 use crate::{
@@ -32,8 +28,8 @@ use crate::{
 /// Builds an SSTable from key-value pairs.
 pub struct SsTableBuilder {
     builder: BlockBuilder,
-    first_key: Vec<u8>,
-    last_key: Vec<u8>,
+    first_key: KeyVec,
+    last_key: KeyVec,
     data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
@@ -46,8 +42,8 @@ impl SsTableBuilder {
         Self {
             builder: BlockBuilder::new(block_size),
             block_size,
-            first_key: Vec::new(),
-            last_key: Vec::new(),
+            first_key: KeyVec::new(),
+            last_key: KeyVec::new(),
             key_hashes: Vec::new(),
             data: Vec::new(),
             meta: Vec::new(),
@@ -62,8 +58,8 @@ impl SsTableBuilder {
         if self.meta.is_empty() {
             self.meta.push(BlockMeta {
                 offset: 0,
-                first_key: KeyBytes::from_bytes(Bytes::new()),
-                last_key: KeyBytes::from_bytes(Bytes::new()),
+                first_key: KeyBytes::new(),
+                last_key: KeyBytes::new(),
             });
         }
 
@@ -80,12 +76,12 @@ impl SsTableBuilder {
             let _ = self.builder.add(key, value);
             self.meta.push(BlockMeta {
                 offset,
-                first_key: KeyBytes::from_bytes(Bytes::new()),
-                last_key: KeyBytes::from_bytes(Bytes::new()),
+                first_key: KeyBytes::new(),
+                last_key: KeyBytes::new(),
             });
         }
 
-        self.key_hashes.push(farmhash::fingerprint32(key.raw_ref()));
+        self.key_hashes.push(farmhash::fingerprint32(key.key_ref()));
         // update current block meta
         let meta_len = self.meta.len();
         if self.meta[meta_len - 1].first_key.is_empty() {
@@ -95,9 +91,9 @@ impl SsTableBuilder {
 
         // update sst meta
         if self.first_key.is_empty() {
-            self.first_key = key.to_key_vec().into_inner();
+            self.first_key = key.to_key_vec();
         }
-        self.last_key = key.to_key_vec().into_inner();
+        self.last_key = key.to_key_vec();
     }
 
     /// Get the estimated size of the SSTable.
@@ -142,8 +138,8 @@ impl SsTableBuilder {
             block_meta_offset: block_meta_offset as usize,
             id,
             block_cache,
-            first_key: KeyVec::from_vec(self.first_key).into_key_bytes(),
-            last_key: KeyVec::from_vec(self.last_key).into_key_bytes(),
+            first_key: self.first_key.into_key_bytes(),
+            last_key: self.last_key.into_key_bytes(),
             bloom: Some(bloom),
             max_ts: 0,
         })

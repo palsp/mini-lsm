@@ -18,8 +18,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::{fs::File, io::Write};
 
-use anyhow::{Context, Result, ensure};
-use nom::ExtendInto;
+use anyhow::{Result, ensure};
 use parking_lot::{Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 

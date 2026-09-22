@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::sync::Arc;
 
 use crate::key::{KeySlice, KeyVec};
@@ -55,14 +52,14 @@ impl BlockIterator {
 
     fn decode_key_at_idx(&self, idx: usize) -> (KeyVec, usize) {
         let offset = self.block.offsets[idx] as usize;
-        let overlap_key_len_end = offset + 2;
+        let overlap_key_len_end = offset + std::mem::size_of::<u16>();
         let overlap_key_len = u16::from_be_bytes(
             self.block.data[offset..overlap_key_len_end]
                 .try_into()
                 .unwrap(),
         ) as usize;
 
-        let rest_key_len_end = overlap_key_len_end + 2;
+        let rest_key_len_end = overlap_key_len_end + std::mem::size_of::<u16>();
         let rest_key_len = u16::from_be_bytes(
             self.block.data[overlap_key_len_end..rest_key_len_end]
                 .try_into()
@@ -71,11 +68,14 @@ impl BlockIterator {
 
         let mut key = KeyVec::new();
         if overlap_key_len > 0 {
-            key.append(&self.first_key.raw_ref()[..overlap_key_len]);
+            key.append(&self.first_key.key_ref()[..overlap_key_len]);
         }
         let key_end = rest_key_len_end + rest_key_len;
         key.append(&self.block.data[rest_key_len_end..key_end]);
-        (key, key_end)
+        let ts_end = key_end + std::mem::size_of::<u64>();
+        let ts = u64::from_be_bytes(self.block.data[key_end..ts_end].try_into().unwrap());
+        key.set_ts(ts);
+        (key, ts_end)
     }
 
     fn seek_to_idx(&mut self, idx: usize) {

@@ -39,7 +39,7 @@ use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::key::KeySlice;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::{Manifest, ManifestRecord};
-use crate::mem_table::{MemTable, MemTableIterator};
+use crate::mem_table::{MemTable, MemTableIterator, map_bound};
 use crate::mvcc::LsmMvccInner;
 use crate::table::{FileObject, SsTable, SsTableBuilder, SsTableIterator};
 
@@ -512,7 +512,7 @@ impl LsmStorageInner {
             MergeIterator::create(l0_iters),
             MergeIterator::create(level_iters),
         )?;
-        if iter.is_valid() && iter.key().raw_ref() == key && !iter.value().is_empty() {
+        if iter.is_valid() && iter.key().key_ref() == key && !iter.value().is_empty() {
             return Ok(Some(Bytes::copy_from_slice(iter.value())));
         }
 
@@ -767,13 +767,12 @@ impl LsmStorageInner {
             level_iters.push(Box::new(concat_iter));
         }
 
-        let end_bound = upper.map(Bytes::copy_from_slice);
         let merged_iter = TwoMergeIterator::create(
             TwoMergeIterator::create(memtable_iter, l0_iter)?,
             MergeIterator::create(level_iters),
         )?;
 
-        let lsm_iter = LsmIterator::new(merged_iter, end_bound)?;
+        let lsm_iter = LsmIterator::new(merged_iter, map_bound(upper))?;
 
         Ok(FusedIterator::new(lsm_iter))
     }
@@ -786,14 +785,14 @@ fn range_overlap(
     table_end: KeySlice,
 ) -> bool {
     match user_end {
-        Bound::Excluded(key) if key <= table_begin.raw_ref() => return false,
-        Bound::Included(key) if key < table_begin.raw_ref() => return false,
+        Bound::Excluded(key) if key <= table_begin.key_ref() => return false,
+        Bound::Included(key) if key < table_begin.key_ref() => return false,
         _ => {}
     }
 
     match user_begin {
-        Bound::Excluded(key) if key >= table_end.raw_ref() => return false,
-        Bound::Included(key) if key > table_end.raw_ref() => return false,
+        Bound::Excluded(key) if key >= table_end.key_ref() => return false,
+        Bound::Included(key) if key > table_end.key_ref() => return false,
         _ => {}
     }
 
@@ -801,5 +800,5 @@ fn range_overlap(
 }
 
 fn key_within(user_key: &[u8], table_begin: KeySlice, table_end: KeySlice) -> bool {
-    table_begin.raw_ref() <= user_key && user_key <= table_end.raw_ref()
+    table_begin.key_ref() <= user_key && user_key <= table_end.key_ref()
 }

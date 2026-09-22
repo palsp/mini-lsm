@@ -54,12 +54,12 @@ impl SsTable {
         println!(
             "id={} first={} last={}",
             self.sst_id(),
-            String::from_utf8_lossy(self.first_key().as_key_slice().raw_ref()),
-            String::from_utf8_lossy(self.last_key().as_key_slice().raw_ref()),
+            String::from_utf8_lossy(self.first_key().as_key_slice().key_ref()),
+            String::from_utf8_lossy(self.last_key().as_key_slice().key_ref()),
         );
 
         while iter.is_valid() {
-            let key = String::from_utf8_lossy(iter.key().raw_ref());
+            let key = String::from_utf8_lossy(iter.key().key_ref());
             let value = String::from_utf8_lossy(iter.value());
             println!("{}->{}", key, value);
             iter.next().unwrap();
@@ -71,7 +71,7 @@ impl SsTable {
         let mut iter = SsTableIterator::create_and_seek_to_first(self.clone())?;
 
         while iter.is_valid() {
-            let key = String::from_utf8_lossy(iter.key().raw_ref());
+            let key = String::from_utf8_lossy(iter.key().key_ref());
             let value = String::from_utf8_lossy(iter.value());
             writeln!(file, "{}->{}", key, value)?;
             iter.next()?;

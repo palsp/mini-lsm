@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 pub(crate) mod bloom;
 mod builder;
 mod iterator;
@@ -34,7 +31,6 @@ use crate::lsm_storage::BlockCache;
 
 use self::bloom::Bloom;
 
-pub(crate) const SIZEOF_U16: usize = std::mem::size_of::<u16>();
 pub(crate) const SIZEOF_U32: usize = std::mem::size_of::<u32>();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,10 +55,12 @@ impl BlockMeta {
         let mut data = Vec::<u8>::new();
         for meta in block_meta.iter() {
             data.extend_from_slice(&(meta.offset as u32).to_be_bytes());
-            data.extend_from_slice(&(meta.first_key.len() as u16).to_be_bytes());
-            data.extend_from_slice(meta.first_key.raw_ref());
-            data.extend_from_slice(&(meta.last_key.len() as u16).to_be_bytes());
-            data.extend_from_slice(meta.last_key.raw_ref());
+            data.extend_from_slice(&(meta.first_key.key_len() as u16).to_be_bytes());
+            data.extend_from_slice(meta.first_key.key_ref());
+            data.extend_from_slice(&meta.first_key.ts().to_be_bytes());
+            data.extend_from_slice(&(meta.last_key.key_len() as u16).to_be_bytes());
+            data.extend_from_slice(meta.last_key.key_ref());
+            data.extend_from_slice(&meta.last_key.ts().to_be_bytes());
         }
 
         let h = crc32fast::hash(&data);
@@ -94,19 +92,31 @@ impl BlockMeta {
             let offset =
                 u32::from_be_bytes([data[cur], data[cur + 1], data[cur + 2], data[cur + 3]])
                     as usize;
-            cur += 4;
-            let first_key_len = u16::from_be_bytes([data[cur], data[cur + 1]]);
-            cur += 2;
+            cur += std::mem::size_of::<u32>();
+            let first_key_len = u16::from_be_bytes([data[cur], data[cur + 1]]) as usize;
+            cur += std::mem::size_of::<u16>();
 
-            let first_key_end = cur + first_key_len as usize;
-            let first_key = KeyBytes::from_bytes(Bytes::copy_from_slice(&data[cur..first_key_end]));
-            cur += first_key_len as usize;
+            let first_key_end = cur + first_key_len;
+            let first_key_bytes = Bytes::copy_from_slice(&data[cur..first_key_end]);
+            cur += first_key_len;
 
-            let last_key_len = u16::from_be_bytes([data[cur], data[cur + 1]]);
-            cur += 2;
-            let last_key_end = cur + last_key_len as usize;
-            let last_key = KeyBytes::from_bytes(Bytes::copy_from_slice(&data[cur..last_key_end]));
-            cur += last_key_len as usize;
+            let first_ts_end = cur + std::mem::size_of::<u64>();
+            let first_ts = u64::from_be_bytes(data[cur..first_ts_end].try_into().unwrap());
+            cur += std::mem::size_of::<u64>();
+
+            let first_key = KeyBytes::from_bytes_with_ts(first_key_bytes, first_ts);
+
+            let last_key_len = u16::from_be_bytes([data[cur], data[cur + 1]]) as usize;
+            cur += std::mem::size_of::<u16>();
+            let last_key_end = cur + last_key_len;
+            let last_key_bytes = Bytes::copy_from_slice(&data[cur..last_key_end]);
+            cur += last_key_len;
+
+            let last_ts_end = cur + std::mem::size_of::<u64>();
+            let last_ts = u64::from_be_bytes(data[cur..last_ts_end].try_into().unwrap());
+            cur += std::mem::size_of::<u64>();
+
+            let last_key = KeyBytes::from_bytes_with_ts(last_key_bytes, last_ts);
 
             block_meta.push(BlockMeta {
                 offset,
@@ -178,7 +188,11 @@ impl SsTable {
     }
 
     /// Open SSTable from a file.
-    pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
+    pub fn open(
+        id: usize,
+        _block_cache: Option<Arc<BlockCache>>,
+        file: FileObject,
+    ) -> Result<Self> {
         let buf = file.read(0, file.size())?;
         ensure!(buf.len() >= SIZEOF_U32, "table footer is truncated");
         let bloom_offset_start = buf.len() - 4;

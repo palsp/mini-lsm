@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 mod builder;
 mod iterator;
 use bytes::Buf;
@@ -28,6 +25,7 @@ use crate::key::KeyVec;
 
 pub(crate) const SIZEOF_U16: usize = std::mem::size_of::<u16>();
 pub(crate) const SIZEOF_U32: usize = std::mem::size_of::<u32>();
+pub(crate) const SIZEOF_U64: usize = std::mem::size_of::<u64>();
 
 /// A block is the smallest unit of read and caching in LSM tree. It is a collection of sorted key-value pairs.
 pub struct Block {
@@ -40,9 +38,12 @@ impl Block {
         let mut buf = &self.data[..];
         // Read overlap len but it is always 0 for first key
         buf.get_u16();
-        let key_len = buf.get_u16();
-        let key = &buf[..key_len as usize];
-        KeyVec::from_vec(key.to_vec())
+        let key_len = buf.get_u16() as usize;
+        let key = &buf[..key_len];
+        let ts_end = key_len + std::mem::size_of::<u64>();
+        let ts = u64::from_be_bytes(buf[key_len..ts_end].try_into().unwrap());
+
+        KeyVec::from_vec_with_ts(key.to_vec(), ts)
     }
     /// Encode the internal data to the data layout illustrated in the course
     /// Note: You may want to recheck if any of the expected field is missing from your output
@@ -97,9 +98,6 @@ impl Block {
         );
 
         let t = offsets.windows(2).all(|pair| pair[0] < pair[1]);
-        if !t {
-            println!("t")
-        }
         ensure!(t, "block entry offsets are not strictly increasing");
 
         for (idx, offset) in offsets.iter().enumerate() {
@@ -110,21 +108,24 @@ impl Block {
             let entry = &data[entry_start..entry_end];
             // entry >=  key_len + value_len
             ensure!(entry.len() >= 4, "block entry header is truncated");
-            let overlap_key_len = u16::from_be_bytes([entry[0], entry[1]]) as usize;
             let rest_key_len = u16::from_be_bytes([entry[2], entry[3]]) as usize;
 
             let key_end = SIZEOF_U32
                 .checked_add(rest_key_len)
                 .context("block key length overflow")?;
 
-            let value_len_end = key_end
+            let ts_end = key_end
+                .checked_add(SIZEOF_U64)
+                .context("key ts length overflow")?;
+
+            let value_len_end = ts_end
                 .checked_add(SIZEOF_U16)
                 .context("block value header overflow")?;
             ensure!(
                 value_len_end <= entry.len(),
                 "block key or value length is truncated"
             );
-            let value_len = u16::from_be_bytes([entry[key_end], entry[key_end + 1]]) as usize;
+            let value_len = u16::from_be_bytes([entry[ts_end], entry[ts_end + 1]]) as usize;
             let entry_len = value_len_end
                 .checked_add(value_len)
                 .context("block value length overflow")?;

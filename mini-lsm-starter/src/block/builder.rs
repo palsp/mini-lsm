@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use bytes::BufMut;
 
 use crate::{
@@ -50,12 +47,12 @@ impl BlockBuilder {
     fn compute_overlap(&self, key: KeySlice) -> u16 {
         let mut overlap = 0;
 
-        for i in 0..key.len() {
-            if i >= self.first_key.len() {
+        for i in 0..key.key_len() {
+            if i >= self.first_key.key_len() {
                 break;
             }
 
-            if key.raw_ref()[i] != self.first_key.raw_ref()[i] {
+            if key.key_ref()[i] != self.first_key.key_ref()[i] {
                 break;
             }
 
@@ -69,7 +66,7 @@ impl BlockBuilder {
     /// You may find the `bytes::BufMut` trait useful for manipulating binary data.
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
-        let Ok(key_len) = u16::try_from(key.len()) else {
+        let Ok(key_len) = u16::try_from(key.key_len()) else {
             return false;
         };
         let Ok(value_len) = u16::try_from(value.len()) else {
@@ -77,7 +74,7 @@ impl BlockBuilder {
         };
 
         let entry_size = key
-            .len()
+            .key_len()
             .saturating_add(value.len())
             .saturating_add(SIZEOF_U16 * 3);
 
@@ -91,14 +88,17 @@ impl BlockBuilder {
         };
 
         self.offsets.push(offset);
-        let overlap = self.compute_overlap(key);
 
+        let overlap = self.compute_overlap(key);
         // Encode key overlap.
         self.data.put_u16(overlap);
         // Encode key length
         self.data.put_u16(key_len - overlap);
         // Encode key content
-        self.data.put(&key.raw_ref()[usize::from(overlap)..]);
+        self.data
+            .put(&key.key_ref()[usize::from(overlap)..usize::from(key_len)]);
+        self.data.put_u64(key.ts());
+
         // Encode value length
         self.data.put_u16(value_len);
         self.data.put(value);
