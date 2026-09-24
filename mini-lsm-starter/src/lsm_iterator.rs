@@ -22,6 +22,7 @@ use crate::{
         StorageIterator, concat_iterator::SstConcatIterator, merge_iterator::MergeIterator,
         two_merge_iterator::TwoMergeIterator,
     },
+    key::KeyBytes,
     mem_table::MemTableIterator,
     table::SsTableIterator,
 };
@@ -35,6 +36,7 @@ type LsmIteratorInner = TwoMergeIterator<
 pub struct LsmIterator {
     inner: LsmIteratorInner,
     end_bound: Bound<Bytes>,
+    prev_key: Option<Bytes>,
 }
 
 impl LsmIterator {
@@ -42,8 +44,12 @@ impl LsmIterator {
         let mut iter = Self {
             inner: iter,
             end_bound,
+            prev_key: None,
         };
         iter.move_to_non_delete()?;
+        if iter.is_valid() {
+            iter.prev_key = Some(Bytes::copy_from_slice(iter.key()));
+        }
         Ok(iter)
     }
 
@@ -78,11 +84,19 @@ impl StorageIterator for LsmIterator {
         self.inner.value()
     }
 
+    // a7 a6 a5 a4
     fn next(&mut self) -> Result<()> {
         while self.is_valid() && !self.reach_end_bound() {
             self.inner.next()?;
-            if self.inner.is_valid() && !self.reach_end_bound() && !self.inner.value().is_empty() {
-                break;
+
+            if self.inner.is_valid()
+                && self.prev_key.as_ref().is_some_and(|v| v != self.key())
+                && !self.reach_end_bound()
+            {
+                self.prev_key = Some(Bytes::copy_from_slice(self.inner.key().key_ref()));
+                if !self.inner.value().is_empty() {
+                    break;
+                }
             }
         }
 

@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 mod leveled;
 mod simple_leveled;
 mod tiered;
@@ -169,18 +166,17 @@ impl LsmStorageInner {
                 let merged_iter = MergeIterator::create(iters);
                 self.build_sstables(merged_iter, tiered_compaction_task.bottom_tier_included)
             }
-
             CompactionTask::Leveled(LeveledCompactionTask {
                 upper_level,
                 upper_level_sst_ids,
-                lower_level,
+                lower_level: _,
                 lower_level_sst_ids,
                 is_lower_level_bottom_level,
             })
             | CompactionTask::Simple(SimpleLeveledCompactionTask {
                 upper_level,
                 upper_level_sst_ids,
-                lower_level,
+                lower_level: _,
                 lower_level_sst_ids,
                 is_lower_level_bottom_level,
             }) => {
@@ -200,7 +196,7 @@ impl LsmStorageInner {
                 };
 
                 let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_ssts)?;
-                if let Some(upper_level) = upper_level {
+                if upper_level.is_some() {
                     let upper_iter = SstConcatIterator::create_and_seek_to_first(upper_ssts)?;
                     let two_merge_iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
                     self.build_sstables(two_merge_iter, *is_lower_level_bottom_level)
@@ -251,7 +247,7 @@ impl LsmStorageInner {
     fn build_sstables<I>(
         &self,
         mut iter: I,
-        is_lower_level_bottom_level: bool,
+        _is_lower_level_bottom_level: bool,
     ) -> Result<Vec<Arc<SsTable>>>
     where
         I: for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>,
@@ -268,7 +264,7 @@ impl LsmStorageInner {
 
             let key = iter.key();
             let value = iter.value();
-            if !value.is_empty() || !is_lower_level_bottom_level {
+            if !value.is_empty() {
                 builder.add(key, value);
             }
 

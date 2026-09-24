@@ -147,6 +147,13 @@ impl<'a> Key<&'a [u8]> {
         Key(self.0.to_vec(), self.1)
     }
 
+    pub fn to_key_bytes(self) -> KeyBytes {
+        KeyBytes::from_bytes_with_ts(
+            Bytes::from_static(unsafe { std::mem::transmute(self.key_ref()) }),
+            self.ts(),
+        )
+    }
+
     /// Create a key slice from a slice with the default timestamp.
     pub fn from_slice(slice: &'a [u8]) -> Self {
         Self(slice, TS_DEFAULT)

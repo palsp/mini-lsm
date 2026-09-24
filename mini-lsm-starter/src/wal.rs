@@ -24,7 +24,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::key::KeySlice;
+use crate::key::{KeyBytes, KeySlice};
 
 pub struct Wal {
     file: Arc<Mutex<BufWriter<File>>>,
@@ -45,7 +45,7 @@ impl Wal {
         })
     }
 
-    pub fn recover(path: impl AsRef<Path>, skiplist: &SkipMap<Bytes, Bytes>) -> Result<Self> {
+    pub fn recover(path: impl AsRef<Path>, skiplist: &SkipMap<KeyBytes, Bytes>) -> Result<Self> {
         let data = fs::read(&path)?;
         let mut data = data.as_slice();
 
@@ -60,7 +60,17 @@ impl Wal {
             let key = data.copy_to_bytes(key_len as usize);
             hasher.update(key.iter().as_slice());
 
-            ensure!(data.remaining() >= 2, "val_len is truncated");
+            ensure!(
+                data.remaining() >= std::mem::size_of::<u64>(),
+                "key ts is truncated"
+            );
+            let ts = data.get_u64();
+            hasher.update(&ts.to_be_bytes());
+
+            ensure!(
+                data.remaining() >= std::mem::size_of::<u16>(),
+                "val_len is truncated"
+            );
             let val_len = data.get_u16();
             hasher.update(&val_len.to_be_bytes());
 
@@ -71,32 +81,41 @@ impl Wal {
             let h = data.get_u32();
             ensure!(h == hasher.finalize(), "wal is corrupted");
 
-            skiplist.insert(key, value);
+            skiplist.insert(KeyBytes::from_bytes_with_ts(key, ts), value);
         }
 
         Self::create(path)
     }
 
-    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
+    pub fn put(&self, key: KeySlice, value: &[u8]) -> Result<()> {
         let mut buf = Vec::new();
 
-        let key_len = u16::try_from(key.len())?;
+        let key_len = u16::try_from(key.key_len())?;
         let val_len = u16::try_from(value.len())?;
 
         let mut hasher = crc32fast::Hasher::new();
 
+        // key_len ( exclude ts len )
         buf.put_u16(key_len);
         hasher.update(&key_len.to_be_bytes());
 
-        buf.put(key);
-        hasher.update(key);
+        // key
+        buf.put(key.key_ref());
+        hasher.update(key.key_ref());
 
+        // ts
+        buf.put_u64(key.ts());
+        hasher.update(&key.ts().to_be_bytes());
+
+        // value_len
         buf.put_u16(val_len);
         hasher.update(&val_len.to_be_bytes());
 
+        // value
         buf.put(value);
         hasher.update(value);
 
+        // checksum
         let h = hasher.finalize();
         buf.extend_from_slice(&h.to_be_bytes());
 
