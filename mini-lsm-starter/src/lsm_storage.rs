@@ -447,22 +447,15 @@ impl LsmStorageInner {
     pub fn get_from_memtable(memtable: &Arc<MemTable>, key: &[u8]) -> (bool, Option<Bytes>) {
         let lower = Bound::Included(KeySlice::from_slice_with_ts(key, TS_RANGE_BEGIN));
         let upper = Bound::Included(KeySlice::from_slice_with_ts(key, TS_RANGE_END));
-        let mut iter = memtable.scan(lower, upper);
-
-        let mut found = false;
-        while iter.is_valid() {
-            found = true;
-            iter.next();
-        }
-
-        if found {
+        let iter = memtable.scan(lower, upper);
+        if iter.is_valid() {
             return (
                 true,
                 Some(Bytes::copy_from_slice(iter.value())).filter(|v| !v.is_empty()),
             );
         }
 
-        return (false, None);
+        (false, None)
     }
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
@@ -472,14 +465,16 @@ impl LsmStorageInner {
             Arc::clone(&guard)
         };
 
-        let (found, val) = Self::get_from_memtable(&snapshot.memtable, key);
-        if found {
+        if let (found, val) = Self::get_from_memtable(&snapshot.memtable, key)
+            && found
+        {
             return Ok(val);
         }
 
         for imm_memtable in snapshot.imm_memtables.iter() {
-            let (found, val) = Self::get_from_memtable(imm_memtable, key);
-            if found {
+            if let (found, val) = Self::get_from_memtable(imm_memtable, key)
+                && found
+            {
                 return Ok(val);
             }
         }
