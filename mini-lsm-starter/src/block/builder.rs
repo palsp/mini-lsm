@@ -74,9 +74,9 @@ impl BlockBuilder {
         };
 
         let entry_size = key
-            .key_len()
+            .raw_len()
             .saturating_add(value.len())
-            .saturating_add(SIZEOF_U16 * 3);
+            .saturating_add(SIZEOF_U16 * 3); // size of overlap, key_len, value_len 
 
         let block_is_full = self.estimated_size().saturating_add(entry_size) > self.block_size;
         if !self.is_empty() && block_is_full {
