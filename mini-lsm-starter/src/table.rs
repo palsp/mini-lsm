@@ -25,7 +25,7 @@ pub use builder::SsTableBuilder;
 use bytes::{Buf, Bytes};
 pub use iterator::SsTableIterator;
 
-use crate::block::Block;
+use crate::block::{Block, SIZEOF_U64};
 use crate::key::{KeyBytes, KeySlice};
 use crate::lsm_storage::BlockCache;
 
@@ -218,8 +218,12 @@ impl SsTable {
             block_meta_offset <= block_meta_offset_start,
             "table block_meta offset is truncated"
         );
-        let block_meta =
-            BlockMeta::decode_block_meta(&buf[block_meta_offset..block_meta_offset_start]);
+        let block_meta_end = block_meta_offset_start
+            .checked_sub(SIZEOF_U64)
+            .context("block meta is truncated")?;
+        let block_meta = BlockMeta::decode_block_meta(&buf[block_meta_offset..block_meta_end]);
+        let ts_end = block_meta_end.checked_add(SIZEOF_U64).context("overflow")?;
+        let max_ts = u64::from_be_bytes(buf[block_meta_end..ts_end].try_into().unwrap());
 
         let first_key = block_meta
             .first()
@@ -239,7 +243,7 @@ impl SsTable {
             first_key,
             last_key,
             bloom: Some(bloom),
-            max_ts: 0,
+            max_ts,
         })
     }
 

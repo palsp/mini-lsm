@@ -21,6 +21,7 @@ use anyhow::Result;
 
 use crate::{
     iterators::StorageIterator,
+    lsm_iterator::LsmIterator,
     lsm_storage::{LsmStorageInner, MiniLsm},
     table::{SsTable, SsTableIterator},
 };

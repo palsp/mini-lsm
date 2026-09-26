@@ -20,7 +20,7 @@ use anyhow::Result;
 use super::{BlockMeta, SsTable};
 use crate::{
     block::BlockBuilder,
-    key::{KeyBytes, KeySlice, KeyVec},
+    key::{KeyBytes, KeySlice, KeyVec, TS_MIN},
     lsm_storage::BlockCache,
     table::{FileObject, bloom::Bloom},
 };
@@ -30,6 +30,7 @@ pub struct SsTableBuilder {
     builder: BlockBuilder,
     first_key: KeyVec,
     last_key: KeyVec,
+    max_ts: u64,
     data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
@@ -47,6 +48,7 @@ impl SsTableBuilder {
             key_hashes: Vec::new(),
             data: Vec::new(),
             meta: Vec::new(),
+            max_ts: TS_MIN,
         }
     }
 
@@ -94,6 +96,8 @@ impl SsTableBuilder {
             self.first_key = key.to_key_vec();
         }
         self.last_key = key.to_key_vec();
+
+        self.max_ts = self.max_ts.max(key.ts())
     }
 
     /// Get the estimated size of the SSTable.
@@ -120,6 +124,9 @@ impl SsTableBuilder {
         // append metadata
         let block_meta_offset = self.data.len() as u32;
         BlockMeta::encode_block_meta(&self.meta, &mut self.data);
+        // append largest_ts
+        self.data.extend_from_slice(&self.max_ts.to_be_bytes());
+
         self.data
             .extend_from_slice(&block_meta_offset.to_be_bytes());
 
@@ -141,7 +148,7 @@ impl SsTableBuilder {
             first_key: self.first_key.into_key_bytes(),
             last_key: self.last_key.into_key_bytes(),
             bloom: Some(bloom),
-            max_ts: 0,
+            max_ts: self.max_ts,
         })
     }
 

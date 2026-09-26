@@ -57,7 +57,6 @@ fn test_timestamped_batches_and_latest_reads() {
             ((Bytes::from("b"), 1), Bytes::from("1")),
         ],
     );
-    storage.dump_structure();
     assert_eq!(storage.get(b"a").unwrap(), Some(Bytes::from("2")));
     assert_eq!(storage.get(b"b").unwrap(), None);
     check_lsm_iter_result_by_key(

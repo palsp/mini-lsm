@@ -22,7 +22,6 @@ use crate::{
         StorageIterator, concat_iterator::SstConcatIterator, merge_iterator::MergeIterator,
         two_merge_iterator::TwoMergeIterator,
     },
-    key::KeyBytes,
     mem_table::MemTableIterator,
     table::SsTableIterator,
 };
@@ -36,35 +35,77 @@ type LsmIteratorInner = TwoMergeIterator<
 pub struct LsmIterator {
     inner: LsmIteratorInner,
     end_bound: Bound<Bytes>,
-    prev_key: Option<Bytes>,
+    prev_key: Vec<u8>,
+    read_ts: u64,
+    is_valid: bool,
 }
 
 impl LsmIterator {
-    pub(crate) fn new(iter: LsmIteratorInner, end_bound: Bound<Bytes>) -> Result<Self> {
+    pub(crate) fn new(
+        iter: LsmIteratorInner,
+        end_bound: Bound<Bytes>,
+        read_ts: u64,
+    ) -> Result<Self> {
         let mut iter = Self {
+            is_valid: iter.is_valid(),
             inner: iter,
             end_bound,
-            prev_key: None,
+            prev_key: Vec::new(),
+            read_ts,
         };
-        iter.move_to_non_delete()?;
-        if iter.is_valid() {
-            iter.prev_key = Some(Bytes::copy_from_slice(iter.key()));
-        }
+        iter.check_end_bound();
+        iter.move_to_key()?;
         Ok(iter)
     }
 
-    fn move_to_non_delete(&mut self) -> Result<()> {
-        while self.inner.is_valid() && self.inner.value().is_empty() {
-            self.inner.next()?;
+    fn move_to_key(&mut self) -> Result<()> {
+        loop {
+            while self.inner.is_valid() && self.inner.key().key_ref() == self.prev_key {
+                self.next_inner()?;
+            }
+            if !self.inner.is_valid() {
+                break;
+            }
+            self.prev_key.clear();
+            self.prev_key.extend(self.inner.key().key_ref());
+            while self.inner.is_valid()
+                && self.inner.key().key_ref() == self.prev_key
+                && self.inner.key().ts() > self.read_ts
+            {
+                self.next_inner()?;
+            }
+            if !self.inner.is_valid() {
+                break;
+            }
+            if self.inner.key().key_ref() != self.prev_key {
+                continue;
+            }
+            if !self.inner.value().is_empty() {
+                break;
+            }
         }
         Ok(())
     }
 
-    fn reach_end_bound(&self) -> bool {
-        match &self.end_bound {
-            Bound::Included(end_key) => self.key() > end_key,
-            Bound::Excluded(end_key) => self.key() >= end_key,
-            Bound::Unbounded => false,
+    fn next_inner(&mut self) -> Result<()> {
+        self.inner.next()?;
+        if !self.inner.is_valid() {
+            self.is_valid = false;
+            return Ok(());
+        }
+        self.check_end_bound();
+        Ok(())
+    }
+
+    fn check_end_bound(&mut self) {
+        if !self.is_valid {
+            return;
+        };
+
+        match self.end_bound.as_ref() {
+            Bound::Unbounded => {}
+            Bound::Included(key) => self.is_valid = self.inner.key().key_ref() <= key.as_ref(),
+            Bound::Excluded(key) => self.is_valid = self.inner.key().key_ref() < key.as_ref(),
         }
     }
 }
@@ -73,7 +114,7 @@ impl StorageIterator for LsmIterator {
     type KeyType<'a> = &'a [u8];
 
     fn is_valid(&self) -> bool {
-        self.inner.is_valid() && !self.reach_end_bound()
+        self.is_valid
     }
 
     fn key(&self) -> &[u8] {
@@ -84,22 +125,9 @@ impl StorageIterator for LsmIterator {
         self.inner.value()
     }
 
-    // a7 a6 a5 a4
     fn next(&mut self) -> Result<()> {
-        while self.is_valid() && !self.reach_end_bound() {
-            self.inner.next()?;
-
-            if self.inner.is_valid()
-                && self.prev_key.as_ref().is_some_and(|v| v != self.key())
-                && !self.reach_end_bound()
-            {
-                self.prev_key = Some(Bytes::copy_from_slice(self.inner.key().key_ref()));
-                if !self.inner.value().is_empty() {
-                    break;
-                }
-            }
-        }
-
+        self.next_inner()?;
+        self.move_to_key()?;
         Ok(())
     }
 
