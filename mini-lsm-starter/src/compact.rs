@@ -254,8 +254,16 @@ impl LsmStorageInner {
     {
         let mut sstables = Vec::new();
         let mut builder = SsTableBuilder::new(self.options.block_size);
+        let mut prev_key: Option<Vec<u8>> = None;
         while iter.is_valid() {
             if builder.estimated_size() > self.options.target_sst_size {
+                // All timestamps of a key should be in the same SST regardless of size
+                while iter.is_valid() && prev_key.as_deref() == Some(iter.key().key_ref()) {
+                    let key = iter.key();
+                    let value = iter.value();
+                    builder.add(key, value);
+                    iter.next()?;
+                }
                 let id = self.next_sst_id();
                 let sstable = builder.build(id, None, self.path_of_sst(id))?;
                 sstables.push(Arc::new(sstable));
@@ -264,6 +272,7 @@ impl LsmStorageInner {
 
             let key = iter.key();
             let value = iter.value();
+            prev_key = Some(iter.key().key_ref().to_vec());
             if !value.is_empty() {
                 builder.add(key, value);
             }
