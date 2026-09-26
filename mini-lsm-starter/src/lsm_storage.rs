@@ -763,14 +763,10 @@ impl LsmStorageInner {
                             table.clone(),
                             KeySlice::from_slice_with_ts(start_key, TS_RANGE_BEGIN),
                         ),
-                        Bound::Excluded(start_key) => {
-                            let mut iter = SsTableIterator::create_and_seek_to_key(
-                                table.clone(),
-                                KeySlice::from_slice_with_ts(start_key, TS_RANGE_END),
-                            )?;
-                            iter.next()?;
-                            Ok(iter)
-                        }
+                        Bound::Excluded(start_key) => SsTableIterator::create_and_seek_to_key(
+                            table.clone(),
+                            KeySlice::from_slice_with_ts(start_key, TS_RANGE_END),
+                        ),
                         Bound::Unbounded => {
                             SsTableIterator::create_and_seek_to_first(table.clone())
                         }
@@ -807,14 +803,10 @@ impl LsmStorageInner {
                         ssts,
                         KeySlice::from_slice_with_ts(start_key, TS_RANGE_BEGIN),
                     )?,
-                    Bound::Excluded(start_key) => {
-                        let mut iter = SstConcatIterator::create_and_seek_to_key(
-                            ssts,
-                            KeySlice::from_slice_with_ts(start_key, TS_RANGE_END),
-                        )?;
-                        iter.next()?;
-                        iter
-                    }
+                    Bound::Excluded(start_key) => SstConcatIterator::create_and_seek_to_key(
+                        ssts,
+                        KeySlice::from_slice_with_ts(start_key, TS_RANGE_END),
+                    )?,
                     Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(ssts)?,
                 }
             };
