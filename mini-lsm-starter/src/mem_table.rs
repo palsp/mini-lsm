@@ -109,8 +109,10 @@ impl MemTable {
     /// In week 2, day 6, also flush the data to WAL.
     /// In week 3, day 5, route this through the batch WAL implementation.
     pub fn put(&self, key: KeySlice, value: &[u8]) -> Result<()> {
-        self.map
-            .insert(key.to_key_bytes(), Bytes::copy_from_slice(value));
+        self.map.insert(
+            key.to_key_vec().into_key_bytes(),
+            Bytes::copy_from_slice(value),
+        );
         self.approximate_size
             .fetch_add(key.raw_len() + value.len(), Ordering::SeqCst);
 
@@ -135,8 +137,8 @@ impl MemTable {
     /// Get an iterator over a range of keys.
     pub fn scan(&self, lower: Bound<KeySlice>, upper: Bound<KeySlice>) -> MemTableIterator {
         let range = (
-            lower.map(KeySlice::to_key_bytes),
-            upper.map(KeySlice::to_key_bytes),
+            lower.map(|k| k.to_key_vec().into_key_bytes()),
+            upper.map(|k| k.to_key_vec().into_key_bytes()),
         );
 
         let mut iter = MemTableIterator::new(
