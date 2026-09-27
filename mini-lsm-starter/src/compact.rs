@@ -15,7 +15,7 @@
 mod leveled;
 mod simple_leveled;
 mod tiered;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
@@ -132,11 +132,12 @@ impl LsmStorageInner {
             let guard = self.state.read();
             Arc::clone(&guard)
         };
+
         match task {
             CompactionTask::Tiered(tiered_compaction_task) => {
                 let tier_ssts = {
                     let snapshot = self.state.read();
-                    for (level, sst_ids) in tiered_compaction_task.tiers.iter() {
+                    for (_, sst_ids) in tiered_compaction_task.tiers.iter() {
                         for sst_id in sst_ids.iter() {
                             if !snapshot.sstables.contains_key(sst_id) {
                                 self.dump_structure();
@@ -164,21 +165,21 @@ impl LsmStorageInner {
                     .collect::<Result<Vec<_>>>()?;
 
                 let merged_iter = MergeIterator::create(iters);
-                self.build_sstables(merged_iter, tiered_compaction_task.bottom_tier_included)
+                self.build_sstables(merged_iter, task.compact_to_bottom_level())
             }
             CompactionTask::Leveled(LeveledCompactionTask {
                 upper_level,
                 upper_level_sst_ids,
                 lower_level: _,
                 lower_level_sst_ids,
-                is_lower_level_bottom_level,
+                is_lower_level_bottom_level: _,
             })
             | CompactionTask::Simple(SimpleLeveledCompactionTask {
                 upper_level,
                 upper_level_sst_ids,
                 lower_level: _,
                 lower_level_sst_ids,
-                is_lower_level_bottom_level,
+                is_lower_level_bottom_level: _,
             }) => {
                 let (lower_ssts, upper_ssts) = {
                     let snapshot = self.state.read();
@@ -199,7 +200,7 @@ impl LsmStorageInner {
                 if upper_level.is_some() {
                     let upper_iter = SstConcatIterator::create_and_seek_to_first(upper_ssts)?;
                     let two_merge_iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
-                    self.build_sstables(two_merge_iter, *is_lower_level_bottom_level)
+                    self.build_sstables(two_merge_iter, task.compact_to_bottom_level())
                 } else {
                     // L0 compaction
                     let iters: Vec<Box<SsTableIterator>> = upper_ssts
@@ -210,7 +211,7 @@ impl LsmStorageInner {
                         .collect::<Result<Vec<_>>>()?;
                     let upper_iter = MergeIterator::create(iters);
                     let two_merge_iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
-                    self.build_sstables(two_merge_iter, *is_lower_level_bottom_level)
+                    self.build_sstables(two_merge_iter, task.compact_to_bottom_level())
                 }
             }
             CompactionTask::ForceFullCompaction {
@@ -239,44 +240,48 @@ impl LsmStorageInner {
                 )?;
 
                 let merged_iter = TwoMergeIterator::create(l0_iters, l1_iters)?;
-                self.build_sstables(merged_iter, true)
+                self.build_sstables(merged_iter, task.compact_to_bottom_level())
             }
         }
     }
 
-    fn build_sstables<I>(
-        &self,
-        mut iter: I,
-        _is_lower_level_bottom_level: bool,
-    ) -> Result<Vec<Arc<SsTable>>>
+    fn build_sstables<I>(&self, mut iter: I, is_bottom_level: bool) -> Result<Vec<Arc<SsTable>>>
     where
-        I: for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>,
+        I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>,
     {
         let mut sstables = Vec::new();
         let mut builder = SsTableBuilder::new(self.options.block_size);
-        let mut prev_key: Option<Vec<u8>> = None;
+        let mut prev_key: Vec<u8> = Vec::new();
+        let watermark = self.mvcc().watermark();
+
+        let mut set: HashSet<Vec<u8>> = HashSet::new();
+
         while iter.is_valid() {
             if builder.estimated_size() > self.options.target_sst_size {
                 // All timestamps of a key should be in the same SST regardless of size
-                while iter.is_valid() && prev_key.as_deref() == Some(iter.key().key_ref()) {
-                    let key = iter.key();
-                    let value = iter.value();
-                    builder.add(key, value);
+                while iter.is_valid() && prev_key == iter.key().key_ref() {
+                    Self::add_to_builder_if_keep(
+                        &iter,
+                        watermark,
+                        &mut set,
+                        &mut builder,
+                        is_bottom_level,
+                    );
                     iter.next()?;
                 }
+                set.clear();
                 let id = self.next_sst_id();
                 let sstable = builder.build(id, None, self.path_of_sst(id))?;
                 sstables.push(Arc::new(sstable));
                 builder = SsTableBuilder::new(self.options.block_size);
             }
 
-            let key = iter.key();
-            let value = iter.value();
-            prev_key = Some(iter.key().key_ref().to_vec());
-            if !value.is_empty() {
-                builder.add(key, value);
+            if !iter.is_valid() {
+                break;
             }
 
+            prev_key = iter.key().key_ref().to_vec();
+            Self::add_to_builder_if_keep(&iter, watermark, &mut set, &mut builder, is_bottom_level);
             iter.next()?;
         }
 
@@ -287,6 +292,28 @@ impl LsmStorageInner {
         }
 
         Ok(sstables)
+    }
+
+    fn add_to_builder_if_keep<I>(
+        iter: &I,
+        watermark: u64,
+        seen: &mut HashSet<Vec<u8>>,
+        builder: &mut SsTableBuilder,
+        is_bottom_level: bool,
+    ) where
+        I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>,
+    {
+        let key = iter.key();
+        let value = iter.value();
+        if key.ts() > watermark {
+            builder.add(key, value);
+        } else if !seen.contains(key.key_ref()) {
+            // because key will always user-key timestamp will be sorted ascending, we can keep only the first one we found.
+            seen.insert(key.key_ref().to_vec());
+            if !value.is_empty() || !is_bottom_level {
+                builder.add(key, value);
+            }
+        }
     }
     pub fn force_full_compaction(&self) -> Result<()> {
         let (l0_to_compact, l1_to_compact) = {

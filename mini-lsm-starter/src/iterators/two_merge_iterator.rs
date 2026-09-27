@@ -24,7 +24,7 @@ use super::StorageIterator;
 pub struct TwoMergeIterator<A: StorageIterator, B: StorageIterator> {
     a: A,
     b: B,
-    // Add fields as need
+    choose_a: bool,
 }
 
 impl<
@@ -33,7 +33,35 @@ impl<
 > TwoMergeIterator<A, B>
 {
     pub fn create(a: A, b: B) -> Result<Self> {
-        Ok(Self { a, b })
+        let mut iter = Self {
+            choose_a: false,
+            a,
+            b,
+        };
+
+        iter.skip_b()?;
+        iter.choose_a = Self::choose_a(&iter.a, &iter.b);
+        Ok(iter)
+    }
+
+    fn choose_a(a: &A, b: &B) -> bool {
+        if !a.is_valid() {
+            return false;
+        }
+
+        if !b.is_valid() {
+            return true;
+        }
+
+        a.key() < b.key()
+    }
+
+    fn skip_b(&mut self) -> Result<()> {
+        if self.a.is_valid() && self.b.is_valid() && self.b.key() == self.a.key() {
+            self.b.next()?;
+        }
+
+        Ok(())
     }
 }
 
@@ -45,44 +73,38 @@ impl<
     type KeyType<'a> = A::KeyType<'a>;
 
     fn key(&self) -> Self::KeyType<'_> {
-        if !self.a.is_valid() || (self.b.is_valid() && self.a.key() > self.b.key()) {
-            return self.b.key();
+        if self.choose_a {
+            self.a.key()
+        } else {
+            self.b.key()
         }
-
-        self.a.key()
     }
 
     fn value(&self) -> &[u8] {
-        if !self.a.is_valid() || (self.b.is_valid() && self.a.key() > self.b.key()) {
-            return self.b.value();
+        if self.choose_a {
+            self.a.value()
+        } else {
+            self.b.value()
         }
-
-        self.a.value()
     }
 
     fn is_valid(&self) -> bool {
-        self.a.is_valid() || self.b.is_valid()
+        if self.choose_a {
+            self.a.is_valid()
+        } else {
+            self.b.is_valid()
+        }
     }
 
     fn next(&mut self) -> Result<()> {
-        if !self.a.is_valid() {
-            return self.b.next();
+        if self.choose_a {
+            self.a.next()?;
+        } else {
+            self.b.next()?;
         }
 
-        if !self.b.is_valid() {
-            return self.a.next();
-        }
-
-        if self.a.key() > self.b.key() {
-            return self.b.next();
-        }
-
-        self.a.next()?;
-        if self.a.is_valid() {
-            while self.b.is_valid() && self.a.key() >= self.b.key() {
-                self.b.next()?;
-            }
-        }
+        self.skip_b()?;
+        self.choose_a = Self::choose_a(&self.a, &self.b);
 
         Ok(())
     }
