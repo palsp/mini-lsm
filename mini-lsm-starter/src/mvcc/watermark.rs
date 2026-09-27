@@ -48,10 +48,7 @@ impl Watermark {
     }
 
     pub fn watermark(&self) -> Option<u64> {
-        self.readers
-            .iter()
-            .min_by_key(|entry| entry.0)
-            .map(|e| *e.0)
+        self.readers.first_key_value().map(|e| *e.0)
     }
 
     pub fn dump_structure(&self) {
