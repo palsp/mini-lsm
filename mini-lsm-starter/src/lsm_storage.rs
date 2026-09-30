@@ -25,7 +25,6 @@ use std::vec;
 
 use anyhow::{Context, Result, anyhow, ensure};
 use bytes::Bytes;
-use moka::ops::compute::Op;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
 use crate::block::Block;
@@ -37,7 +36,7 @@ use crate::iterators::StorageIterator;
 use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
-use crate::key::{KeyBytes, KeySlice, TS_DEFAULT, TS_RANGE_BEGIN, TS_RANGE_END};
+use crate::key::{KeySlice, TS_DEFAULT, TS_RANGE_END};
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::{Manifest, ManifestRecord};
 use crate::mem_table::{MemTable, MemTableIterator, map_bound, map_key_bound_plus_ts};
@@ -596,17 +595,23 @@ impl LsmStorageInner {
             let _lock = mvcc.write_lock.lock();
             let ts = mvcc.latest_commit_ts() + 1;
             let state = self.state.read();
-            for record in batch {
-                match record {
-                    WriteBatchRecord::Put(key, value) => state.memtable.put(
+
+            let records = batch
+                .iter()
+                .map(|record| match record {
+                    WriteBatchRecord::Put(key, value) => (
                         KeySlice::from_slice_with_ts(key.as_ref(), ts),
                         value.as_ref(),
-                    )?,
-                    WriteBatchRecord::Del(key) => state
-                        .memtable
-                        .put(KeySlice::from_slice_with_ts(key.as_ref(), ts), b"")?,
-                }
-            }
+                    ),
+
+                    WriteBatchRecord::Del(key) => {
+                        (KeySlice::from_slice_with_ts(key.as_ref(), ts), b"".as_ref())
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            state.memtable.put_batch(&records)?;
+
             mvcc.update_commit_ts(ts);
             state.memtable.approximate_size() >= self.options.target_sst_size
         };

@@ -123,27 +123,26 @@ impl MemTable {
     }
 
     /// Put a key-value pair into the mem-table.
-    ///
-    /// In week 1, day 1, simply put the key-value pair into the skipmap.
-    /// In week 2, day 6, also flush the data to WAL.
-    /// In week 3, day 5, route this through the batch WAL implementation.
     pub fn put(&self, key: KeySlice, value: &[u8]) -> Result<()> {
-        self.map.insert(
-            key.to_key_vec().into_key_bytes(),
-            Bytes::copy_from_slice(value),
-        );
-        self.approximate_size
-            .fetch_add(key.raw_len() + value.len(), Ordering::SeqCst);
-
-        if let Some(wal) = &self.wal {
-            wal.put(key, value)?;
-        }
-        Ok(())
+        self.put_batch(&[(key, value)])
     }
 
-    /// Implement this in week 3, day 5.
-    pub fn put_batch(&self, _data: &[(KeySlice, &[u8])]) -> Result<()> {
-        unimplemented!()
+    pub fn put_batch(&self, data: &[(KeySlice, &[u8])]) -> Result<()> {
+        if let Some(wal) = &self.wal {
+            wal.put_batch(data)?;
+        }
+
+        let mut size = 0_usize;
+        for (key, value) in data.iter() {
+            self.map.insert(
+                key.to_key_vec().into_key_bytes(),
+                Bytes::copy_from_slice(value),
+            );
+            size += key.raw_len() + value.len();
+        }
+        self.approximate_size.fetch_add(size, Ordering::SeqCst);
+
+        Ok(())
     }
 
     pub fn sync_wal(&self) -> Result<()> {

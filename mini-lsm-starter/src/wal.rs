@@ -12,15 +12,16 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use anyhow::{Result, ensure};
+use anyhow::{Error, Result, ensure};
 use bytes::{Buf, BufMut, Bytes};
+use core::fmt;
+use crc32fast::Hasher;
 use crossbeam_skiplist::SkipMap;
 use parking_lot::Mutex;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
+use std::ops::Deref;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -28,6 +29,31 @@ use crate::key::{KeyBytes, KeySlice};
 
 pub struct Wal {
     file: Arc<Mutex<BufWriter<File>>>,
+}
+
+#[derive(Debug)]
+enum WalError {
+    Truncated { field: &'static str },
+    InvalidLength { field: &'static str },
+    ChecksumMismatch,
+}
+
+impl std::error::Error for WalError {}
+
+impl fmt::Display for WalError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WalError::Truncated { field } => {
+                write!(f, "{field} is truncated")
+            }
+            WalError::InvalidLength { field } => {
+                write!(f, "invalid {field} length")
+            }
+            WalError::ChecksumMismatch => {
+                write!(f, "checksum mismatch")
+            }
+        }
+    }
 }
 
 impl Wal {
@@ -46,74 +72,134 @@ impl Wal {
     }
 
     pub fn recover(path: impl AsRef<Path>, skiplist: &SkipMap<KeyBytes, Bytes>) -> Result<Self> {
-        let data = fs::read(&path)?;
-        let mut data = data.as_slice();
+        let original = fs::read(&path)?;
+        let mut data = original.as_slice();
+        let mut boundary = 0;
 
         while data.remaining() > 0 {
-            let mut hasher = crc32fast::Hasher::new();
+            if data.remaining() < std::mem::size_of::<u32>() {
+                break;
+            }
 
-            ensure!(data.remaining() >= 2, "key_len is truncated");
+            let size = data.get_u32();
+            match Self::recover_batch(size, &mut data) {
+                Ok(entries) => {
+                    for (key, value) in entries {
+                        skiplist.insert(key, value);
+                    }
+                    boundary = original.len() - data.remaining();
+                }
+                Err(err) => {
+                    // if frame end inside header, body or checksum, discard only incomplete frame
+                    if let Some(WalError::Truncated { .. }) = err.downcast_ref::<WalError>() {
+                        break;
+                    }
+
+                    // A checksum mismatch or invalid key-value length is a corruption
+                    return Err(err);
+                }
+            }
+        }
+
+        fs::write(path.as_ref(), &original[..boundary])?;
+        Self::create(path)
+    }
+
+    fn recover_batch(size: u32, data: &mut impl Buf) -> Result<Vec<(KeyBytes, Bytes)>> {
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&size.to_be_bytes());
+        let mut remaining = size;
+        let mut entries = Vec::<(KeyBytes, Bytes)>::with_capacity(size as usize);
+        while data.remaining() > 0 && remaining > 0 {
+            ensure!(
+                data.remaining() >= std::mem::size_of::<u16>(),
+                WalError::Truncated { field: "key_len" }
+            );
+
             let key_len = data.get_u16();
             hasher.update(&key_len.to_be_bytes());
 
-            ensure!(data.remaining() >= key_len as usize, "key is truncated");
+            ensure!(
+                data.remaining() >= key_len as usize,
+                WalError::InvalidLength { field: "key_len" }
+            );
+
             let key = data.copy_to_bytes(key_len as usize);
             hasher.update(key.iter().as_slice());
 
             ensure!(
                 data.remaining() >= std::mem::size_of::<u64>(),
-                "key ts is truncated"
+                WalError::Truncated { field: "ts" }
             );
+
             let ts = data.get_u64();
             hasher.update(&ts.to_be_bytes());
 
             ensure!(
                 data.remaining() >= std::mem::size_of::<u16>(),
-                "val_len is truncated"
+                WalError::Truncated { field: "value_len" }
             );
             let val_len = data.get_u16();
             hasher.update(&val_len.to_be_bytes());
 
-            ensure!(data.remaining() >= val_len as usize, "value is truncated");
+            ensure!(
+                data.remaining() >= val_len as usize,
+                WalError::InvalidLength { field: "value" }
+            );
+
             let value = data.copy_to_bytes(val_len as usize);
             hasher.update(value.iter().as_slice());
 
-            let h = data.get_u32();
-            ensure!(h == hasher.finalize(), "wal is corrupted");
-
-            skiplist.insert(KeyBytes::from_bytes_with_ts(key, ts), value);
+            entries.push((KeyBytes::from_bytes_with_ts(key, ts), value));
+            remaining -= 1;
         }
 
-        Self::create(path)
+        ensure!(
+            data.remaining() >= std::mem::size_of::<u32>(),
+            WalError::Truncated { field: "checksum" }
+        );
+        let checksum = data.get_u32();
+        ensure!(checksum == hasher.finalize(), WalError::ChecksumMismatch);
+
+        Ok(entries)
     }
 
     pub fn put(&self, key: KeySlice, value: &[u8]) -> Result<()> {
+        self.put_batch(&[(key, value)])
+    }
+
+    pub fn put_batch(&self, data: &[(KeySlice, &[u8])]) -> Result<()> {
         let mut buf = Vec::new();
-
-        let key_len = u16::try_from(key.key_len())?;
-        let val_len = u16::try_from(value.len())?;
-
         let mut hasher = crc32fast::Hasher::new();
 
-        // key_len ( exclude ts len )
-        buf.put_u16(key_len);
-        hasher.update(&key_len.to_be_bytes());
+        let batch_size = u32::try_from(data.len())?;
+        buf.put_u32(batch_size);
+        hasher.update(&batch_size.to_be_bytes());
 
-        // key
-        buf.put(key.key_ref());
-        hasher.update(key.key_ref());
+        for (key, value) in data.iter() {
+            let key_len = u16::try_from(key.key_len())?;
+            let val_len = u16::try_from(value.len())?;
 
-        // ts
-        buf.put_u64(key.ts());
-        hasher.update(&key.ts().to_be_bytes());
+            // key_len ( exclude ts len )
+            buf.put_u16(key_len);
+            hasher.update(&key_len.to_be_bytes());
 
-        // value_len
-        buf.put_u16(val_len);
-        hasher.update(&val_len.to_be_bytes());
+            // key
+            buf.put(key.key_ref());
+            hasher.update(key.key_ref());
 
-        // value
-        buf.put(value);
-        hasher.update(value);
+            // ts
+            buf.put_u64(key.ts());
+            hasher.update(&key.ts().to_be_bytes());
+
+            // value_len
+            buf.put_u16(val_len);
+            hasher.update(&val_len.to_be_bytes());
+
+            // value
+            buf.put(*value);
+            hasher.update(value);
+        }
 
         // checksum
         let h = hasher.finalize();
@@ -122,11 +208,6 @@ impl Wal {
         let mut writer = self.file.lock();
         writer.write_all(&buf)?;
         Ok(())
-    }
-
-    /// Implement this in week 3, day 5.
-    pub fn put_batch(&self, _data: &[(KeySlice, &[u8])]) -> Result<()> {
-        unimplemented!()
     }
 
     pub fn sync(&self) -> Result<()> {

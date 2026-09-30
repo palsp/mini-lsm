@@ -18,10 +18,13 @@
 use std::{
     collections::HashSet,
     ops::Bound,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail, ensure};
 use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
 use ouroboros::self_referencing;
@@ -30,7 +33,7 @@ use parking_lot::Mutex;
 use crate::{
     iterators::{StorageIterator, two_merge_iterator::TwoMergeIterator},
     lsm_iterator::{FusedIterator, LsmIterator},
-    lsm_storage::LsmStorageInner,
+    lsm_storage::{LsmStorageInner, WriteBatchRecord},
 };
 
 pub struct Transaction {
@@ -44,10 +47,21 @@ pub struct Transaction {
 
 impl Transaction {
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
+        ensure!(
+            !self.committed.load(Ordering::Relaxed),
+            "transaction already committed"
+        );
+        if let Some(entry) = self.local_storage.get(&Bytes::copy_from_slice(key)) {
+            return Ok(Some(entry.value().clone()).filter(|v| !v.is_empty()));
+        }
         self.inner.get_with_ts(key, self.read_ts)
     }
 
     pub fn scan(self: &Arc<Self>, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> Result<TxnIterator> {
+        ensure!(
+            !self.committed.load(Ordering::Relaxed),
+            "transaction already committed"
+        );
         let fused_iter = self.inner.scan_with_ts(lower, upper, self.read_ts)?;
         let range = (
             lower.map(Bytes::copy_from_slice),
@@ -65,15 +79,39 @@ impl Transaction {
     }
 
     pub fn put(&self, key: &[u8], value: &[u8]) {
-        unimplemented!()
+        if !self.committed.load(Ordering::Relaxed) {
+            self.local_storage
+                .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
+        }
     }
 
     pub fn delete(&self, key: &[u8]) {
-        unimplemented!()
+        if !self.committed.load(Ordering::Relaxed) {
+            self.local_storage
+                .insert(Bytes::copy_from_slice(key), Bytes::new());
+        }
     }
 
     pub fn commit(&self) -> Result<()> {
-        unimplemented!()
+        if self.committed.swap(true, Ordering::Relaxed) {
+            bail!("transaction already committed");
+        }
+
+        let records = self
+            .local_storage
+            .iter()
+            .map(|entry| {
+                if entry.value().is_empty() {
+                    WriteBatchRecord::Del(entry.key().clone())
+                } else {
+                    WriteBatchRecord::Put(entry.key().clone(), entry.value().clone())
+                }
+            })
+            .collect::<Vec<WriteBatchRecord<Bytes>>>();
+
+        self.inner.write_batch(&records)?;
+
+        Ok(())
     }
 }
 
@@ -134,7 +172,16 @@ impl TxnIterator {
         txn: Arc<Transaction>,
         iter: TwoMergeIterator<TxnLocalIterator, FusedIterator<LsmIterator>>,
     ) -> Result<Self> {
-        Ok(TxnIterator { _txn: txn, iter })
+        let mut iter = TxnIterator { _txn: txn, iter };
+        iter.move_to_non_deleted_key()?;
+        Ok(iter)
+    }
+
+    fn move_to_non_deleted_key(&mut self) -> Result<()> {
+        while self.iter.is_valid() && self.iter.value().is_empty() {
+            self.iter.next()?;
+        }
+        Ok(())
     }
 }
 
@@ -157,7 +204,9 @@ impl StorageIterator for TxnIterator {
     }
 
     fn next(&mut self) -> Result<()> {
-        self.iter.next()
+        self.iter.next()?;
+        self.move_to_non_deleted_key()?;
+        Ok(())
     }
 
     fn num_active_iterators(&self) -> usize {
