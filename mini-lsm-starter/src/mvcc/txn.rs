@@ -79,17 +79,15 @@ impl Transaction {
     }
 
     pub fn put(&self, key: &[u8], value: &[u8]) {
-        if !self.committed.load(Ordering::Relaxed) {
-            self.local_storage
-                .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
-        }
+        assert!(!self.committed.load(Ordering::Relaxed));
+        self.local_storage
+            .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
     }
 
     pub fn delete(&self, key: &[u8]) {
-        if !self.committed.load(Ordering::Relaxed) {
-            self.local_storage
-                .insert(Bytes::copy_from_slice(key), Bytes::new());
-        }
+        assert!(!self.committed.load(Ordering::Relaxed));
+        self.local_storage
+            .insert(Bytes::copy_from_slice(key), Bytes::new());
     }
 
     pub fn commit(&self) -> Result<()> {
