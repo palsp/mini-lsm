@@ -104,7 +104,12 @@ impl Wal {
             boundary = original.len() - data.remaining();
         }
 
-        fs::write(path.as_ref(), &original[..boundary])?;
+        // drop only the incomplete tail; validated frames are never rewritten
+        if boundary < original.len() {
+            let file = OpenOptions::new().write(true).open(path.as_ref())?;
+            file.set_len(boundary as u64)?;
+            file.sync_all()?;
+        }
         Self::create(path)
     }
 
