@@ -13,15 +13,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::{Error, Result, ensure};
+use anyhow::{Result, ensure};
 use bytes::{Buf, BufMut, Bytes};
 use core::fmt;
-use crc32fast::Hasher;
 use crossbeam_skiplist::SkipMap;
 use parking_lot::Mutex;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::ops::Deref;
 use std::path::Path;
 use std::sync::Arc;
 

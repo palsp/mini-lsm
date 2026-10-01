@@ -383,34 +383,29 @@ impl LsmStorageInner {
                 }
             }
             next_sst_id += 1;
-
-            if options.enable_wal {
-                if state.memtable.id() != 0 {
-                    let id = state.memtable.id();
-                    state.memtable = Arc::new(MemTable::recover_from_wal(
-                        id,
-                        Self::path_of_wal_static(path, id),
-                    )?);
-                }
-
-                for i in 0..state.imm_memtables.len() {
-                    let id = state.imm_memtables[i].id();
-                    state.imm_memtables[i] = Arc::new(MemTable::recover_from_wal(
-                        id,
-                        Self::path_of_wal_static(path, id),
-                    )?);
-                }
-            } else {
-                state.memtable = Arc::new(MemTable::create(next_sst_id));
-            }
         }
 
-        if state.memtable.id() == 0 {
-            state.memtable = Arc::new(if options.enable_wal {
-                MemTable::create_with_wal(0, Self::path_of_wal_static(path, 0))?
+        if options.enable_wal {
+            let id = state.memtable.id();
+            let wal_path = Self::path_of_wal_static(path, id);
+            if wal_path.exists() {
+                state.memtable = Arc::new(MemTable::recover_from_wal(
+                    id,
+                    Self::path_of_wal_static(path, id),
+                )?);
             } else {
-                MemTable::create(0)
-            })
+                state.memtable = Arc::new(MemTable::create_with_wal(id, wal_path)?);
+            }
+
+            for i in 0..state.imm_memtables.len() {
+                let id = state.imm_memtables[i].id();
+                state.imm_memtables[i] = Arc::new(MemTable::recover_from_wal(
+                    id,
+                    Self::path_of_wal_static(path, id),
+                )?);
+            }
+        } else {
+            state.memtable = Arc::new(MemTable::create(next_sst_id));
         }
 
         let mut max_ts = TS_DEFAULT;
