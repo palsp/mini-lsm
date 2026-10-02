@@ -12,11 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     ops::Bound,
     sync::{
         Arc,
@@ -32,8 +29,10 @@ use parking_lot::Mutex;
 
 use crate::{
     iterators::{StorageIterator, two_merge_iterator::TwoMergeIterator},
+    key,
     lsm_iterator::{FusedIterator, LsmIterator},
     lsm_storage::{LsmStorageInner, WriteBatchRecord},
+    mvcc::CommittedTxnData,
 };
 
 pub struct Transaction {
@@ -51,6 +50,9 @@ impl Transaction {
             !self.committed.load(Ordering::Relaxed),
             "transaction already committed"
         );
+        if let Some(key_hashes) = &self.key_hashes {
+            key_hashes.lock().1.insert(farmhash::hash32(key));
+        }
         if let Some(entry) = self.local_storage.get(&Bytes::copy_from_slice(key)) {
             return Ok(Some(entry.value().clone()).filter(|v| !v.is_empty()));
         }
@@ -80,20 +82,66 @@ impl Transaction {
 
     pub fn put(&self, key: &[u8], value: &[u8]) {
         assert!(!self.committed.load(Ordering::Relaxed));
+        if let Some(key_hashes) = &self.key_hashes {
+            key_hashes.lock().0.insert(farmhash::hash32(key));
+        }
         self.local_storage
             .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
     }
 
     pub fn delete(&self, key: &[u8]) {
         assert!(!self.committed.load(Ordering::Relaxed));
+        if let Some(key_hashes) = &self.key_hashes {
+            key_hashes.lock().0.insert(farmhash::hash32(key));
+        }
         self.local_storage
             .insert(Bytes::copy_from_slice(key), Bytes::new());
+    }
+
+    fn check_can_commit(
+        &self,
+        committed_txns: &BTreeMap<u64, CommittedTxnData>,
+        expected_commit_ts: u64,
+    ) -> bool {
+        match &self.key_hashes.as_ref().map(|k| k.lock()) {
+            Some(key_hashes) => {
+                if key_hashes.0.is_empty() {
+                    return true;
+                }
+
+                for committed_txn in committed_txns.values() {
+                    if committed_txn.commit_ts > self.read_ts
+                        && committed_txn.commit_ts < expected_commit_ts
+                    {
+                        for h in key_hashes.1.iter() {
+                            if committed_txn.key_hashes.contains(h) {
+                                return false;
+                            }
+                        }
+                    }
+                }
+
+                true
+            }
+            None => true,
+        }
     }
 
     pub fn commit(&self) -> Result<()> {
         if self.committed.swap(true, Ordering::Relaxed) {
             bail!("transaction already committed");
         }
+
+        if self.local_storage.is_empty() {
+            return Ok(());
+        }
+
+        let _lock = self.inner.mvcc().commit_lock.lock();
+        let mut committed_txns = self.inner.mvcc().committed_txns.lock();
+        let expected_commit_ts = self.inner.mvcc().latest_commit_ts() + 1;
+
+        let can_commit = self.check_can_commit(&committed_txns, expected_commit_ts);
+        ensure!(can_commit, "serialization error");
 
         let records = self
             .local_storage
@@ -107,7 +155,28 @@ impl Transaction {
             })
             .collect::<Vec<WriteBatchRecord<Bytes>>>();
 
-        self.inner.write_batch(&records)?;
+        let commit_ts = self.inner.write_batch_inner(&records)?;
+        if let Some(key_hashes) = &self.key_hashes.as_ref().map(|k| k.lock()) {
+            committed_txns.insert(
+                commit_ts,
+                CommittedTxnData {
+                    commit_ts,
+                    key_hashes: key_hashes.0.clone(),
+                    read_ts: self.read_ts,
+                },
+            );
+        }
+
+        // clean up
+        let watermark = self.inner.mvcc().watermark();
+        let ts_to_remove = committed_txns
+            .iter()
+            .filter_map(|(&ts, _)| if ts < watermark { Some(ts) } else { None })
+            .collect::<Vec<_>>();
+
+        for ts in ts_to_remove {
+            committed_txns.remove(&ts);
+        }
 
         Ok(())
     }
@@ -161,7 +230,7 @@ impl StorageIterator for TxnLocalIterator {
 }
 
 pub struct TxnIterator {
-    _txn: Arc<Transaction>,
+    txn: Arc<Transaction>,
     iter: TwoMergeIterator<TxnLocalIterator, FusedIterator<LsmIterator>>,
 }
 
@@ -170,8 +239,14 @@ impl TxnIterator {
         txn: Arc<Transaction>,
         iter: TwoMergeIterator<TxnLocalIterator, FusedIterator<LsmIterator>>,
     ) -> Result<Self> {
-        let mut iter = TxnIterator { _txn: txn, iter };
+        let mut iter = TxnIterator { txn, iter };
         iter.move_to_non_deleted_key()?;
+        if iter.is_valid()
+            && let Some(key_hashes) = &iter.txn.key_hashes
+        {
+            key_hashes.lock().1.insert(farmhash::hash32(iter.key()));
+        }
+
         Ok(iter)
     }
 
@@ -204,6 +279,14 @@ impl StorageIterator for TxnIterator {
     fn next(&mut self) -> Result<()> {
         self.iter.next()?;
         self.move_to_non_deleted_key()?;
+        if self.is_valid()
+            && let Some(key_hashes) = &self.txn.key_hashes
+        {
+            key_hashes
+                .lock()
+                .1
+                .insert(farmhash::hash32(self.iter.key()));
+        }
         Ok(())
     }
 

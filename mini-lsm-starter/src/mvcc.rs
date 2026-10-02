@@ -65,17 +65,23 @@ impl LsmMvccInner {
         ts.1.watermark().unwrap_or(ts.0)
     }
 
-    pub fn new_txn(&self, inner: Arc<LsmStorageInner>, _serializable: bool) -> Arc<Transaction> {
+    pub fn new_txn(&self, inner: Arc<LsmStorageInner>, serializable: bool) -> Arc<Transaction> {
         let mut ts = self.ts.lock();
         let read_ts = ts.0;
         ts.1.add_reader(read_ts);
+
+        let key_hashes = if serializable {
+            Some(Mutex::new((HashSet::new(), HashSet::new())))
+        } else {
+            None
+        };
 
         Arc::new(Transaction {
             inner,
             committed: Arc::new(AtomicBool::new(false)),
             read_ts,
             local_storage: Arc::new(SkipMap::new()),
-            key_hashes: None,
+            key_hashes,
         })
     }
 }

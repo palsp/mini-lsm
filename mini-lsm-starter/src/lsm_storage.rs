@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::ops::Bound;
@@ -584,8 +581,27 @@ impl LsmStorageInner {
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
-    pub fn write_batch<T: AsRef<[u8]>>(&self, batch: &[WriteBatchRecord<T>]) -> Result<()> {
-        let memtable_reaches_capacity = {
+    pub fn write_batch<T: AsRef<[u8]>>(
+        self: &Arc<Self>,
+        batch: &[WriteBatchRecord<T>],
+    ) -> Result<()> {
+        if self.options.serializable {
+            let txn = self.new_txn()?;
+            for record in batch.iter() {
+                match record {
+                    WriteBatchRecord::Put(key, value) => txn.put(key.as_ref(), value.as_ref()),
+                    WriteBatchRecord::Del(key) => txn.delete(key.as_ref()),
+                }
+            }
+            txn.commit()?;
+        } else {
+            self.write_batch_inner(batch)?;
+        }
+        Ok(())
+    }
+
+    pub fn write_batch_inner<T: AsRef<[u8]>>(&self, batch: &[WriteBatchRecord<T>]) -> Result<u64> {
+        let (commit_ts, memtable_reaches_capacity) = {
             let mvcc = self.mvcc();
             let _lock = mvcc.write_lock.lock();
             let ts = mvcc.latest_commit_ts() + 1;
@@ -608,7 +624,10 @@ impl LsmStorageInner {
             state.memtable.put_batch(&records)?;
 
             mvcc.update_commit_ts(ts);
-            state.memtable.approximate_size() >= self.options.target_sst_size
+            (
+                ts,
+                state.memtable.approximate_size() >= self.options.target_sst_size,
+            )
         };
 
         if memtable_reaches_capacity {
@@ -620,17 +639,31 @@ impl LsmStorageInner {
             }
         }
 
-        Ok(())
+        Ok(commit_ts)
     }
 
     /// Put a key-value pair into the storage by writing into the current memtable.
-    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
-        self.write_batch(&[WriteBatchRecord::Put(key, value)])
+    pub fn put(self: &Arc<Self>, key: &[u8], value: &[u8]) -> Result<()> {
+        if self.options.serializable {
+            let txn = self.new_txn()?;
+            txn.put(key, value);
+            txn.commit()?;
+        } else {
+            self.write_batch_inner(&[WriteBatchRecord::Put(key, value)])?;
+        }
+        Ok(())
     }
 
     /// Remove a key from the storage by writing an empty value.
-    pub fn delete(&self, key: &[u8]) -> Result<()> {
-        self.write_batch(&[WriteBatchRecord::Del(key)])
+    pub fn delete(self: &Arc<Self>, key: &[u8]) -> Result<()> {
+        if self.options.serializable {
+            let txn = self.new_txn()?;
+            txn.delete(key);
+            txn.commit()?;
+        } else {
+            self.write_batch_inner(&[WriteBatchRecord::Del(key)])?;
+        }
+        Ok(())
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {
