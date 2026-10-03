@@ -17,6 +17,7 @@ mod simple_leveled;
 mod tiered;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,7 +34,7 @@ use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::key::KeySlice;
-use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
+use crate::lsm_storage::{CompactionFilter, LsmStorageInner, LsmStorageState};
 use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
@@ -255,16 +256,18 @@ impl LsmStorageInner {
         let watermark = self.mvcc().watermark();
 
         let mut set: HashSet<Vec<u8>> = HashSet::new();
+        let compaction_filters = self.compaction_filters.lock().clone();
 
         while iter.is_valid() {
             if builder.estimated_size() > self.options.target_sst_size {
                 // All timestamps of a key should be in the same SST regardless of size
                 while iter.is_valid() && prev_key == iter.key().key_ref() {
-                    Self::add_to_builder_if_keep(
+                    self.add_to_builder_if_keep(
                         &iter,
                         watermark,
                         &mut set,
                         &mut builder,
+                        &compaction_filters,
                         is_bottom_level,
                     );
                     iter.next()?;
@@ -281,7 +284,14 @@ impl LsmStorageInner {
             }
 
             prev_key = iter.key().key_ref().to_vec();
-            Self::add_to_builder_if_keep(&iter, watermark, &mut set, &mut builder, is_bottom_level);
+            self.add_to_builder_if_keep(
+                &iter,
+                watermark,
+                &mut set,
+                &mut builder,
+                &compaction_filters,
+                is_bottom_level,
+            );
             iter.next()?;
         }
 
@@ -295,10 +305,12 @@ impl LsmStorageInner {
     }
 
     fn add_to_builder_if_keep<I>(
+        &self,
         iter: &I,
         watermark: u64,
         seen: &mut HashSet<Vec<u8>>,
         builder: &mut SsTableBuilder,
+        compaction_filters: &[CompactionFilter],
         is_bottom_level: bool,
     ) where
         I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>,
@@ -310,7 +322,15 @@ impl LsmStorageInner {
         } else if !seen.contains(key.key_ref()) {
             // because key will always user-key timestamp will be sorted ascending, we can keep only the first one we found.
             seen.insert(key.key_ref().to_vec());
-            if !value.is_empty() || !is_bottom_level {
+            let matched_filter = compaction_filters
+                .iter()
+                .find(|&filter| match filter {
+                    crate::lsm_storage::CompactionFilter::Prefix(bytes) => {
+                        key.key_ref().starts_with(bytes)
+                    }
+                })
+                .is_some();
+            if (!value.is_empty() || !is_bottom_level) && !matched_filter {
                 builder.add(key, value);
             }
         }

@@ -29,7 +29,6 @@ use parking_lot::Mutex;
 
 use crate::{
     iterators::{StorageIterator, two_merge_iterator::TwoMergeIterator},
-    key,
     lsm_iterator::{FusedIterator, LsmIterator},
     lsm_storage::{LsmStorageInner, WriteBatchRecord},
     mvcc::CommittedTxnData,
